@@ -18,16 +18,14 @@ class Turtlebot():
         self.goal_pos = np.array(goal_pos)
         self.body_id = p.loadURDF("turtlebot3.urdf", basePosition=self.initial_pos, physicsClientId=self.pybullet_client)
 
-        self.setpoint_forward_speed = 0
-        self.setpoint_yaw_rate = 0
-
-        self.closest_dist_to_goal = np.sqrt(np.sum((self.position - self.goal_pos)**2))
-
         self.reset()	
 
     def reset(self):
         p.resetBasePositionAndOrientation(self.body_id, self.initial_pos, p.getQuaternionFromEuler([0,0,90*(np.pi/180)]), physicsClientId=self.pybullet_client)
         self.update_state()
+        self.closest_dist_to_goal = np.sqrt(np.sum((self.position - self.goal_pos)**2))
+        self.setpoint_forward_speed = 0
+        self.setpoint_yaw_rate = 0
 
     def update_state(self):
         position, orientation = p.getBasePositionAndOrientation(self.body_id, physicsClientId=self.pybullet_client)
@@ -46,6 +44,8 @@ class Turtlebot():
         return np.array(p.getMatrixFromQuaternion(self.orientation if orientation is None else orientation)).reshape(3,3)
 
     def set_velocity(self, angular, lateral):
+        assert not np.isnan(angular)
+        assert not np.isnan(lateral)
         self.setpoint_forward_speed = np.clip(lateral, *self.CONFIG['limits']['forward_speed'])
         self.setpoint_yaw_rate = np.clip(angular, *self.CONFIG['limits']['yaw_rate'])
 
@@ -70,6 +70,7 @@ class Turtlebot():
         reward = 0
         if dst_goal < self.closest_dist_to_goal:
             reward = self.closest_dist_to_goal - dst_goal
+            self.closest_dist_to_goal = dst_goal
         done = dst_goal < 0.1
         return obs, reward, done
 
@@ -154,9 +155,62 @@ class SimEnv(gym.Env):
             'gso': self.compute_gso(),
             'state': state
         }
+        #print(self.timestep)
         done = all(dones) or self.timestep > self.cfg['max_time_steps']
         #print("INF", actions, infos, len(self.robots))
         return obs, reward, done, infos
+
+def test_env_keyboard():
+
+    env = SimEnv({
+        'agent_poses': [
+            [-0.3, -0.5, 0],
+            #[0.3, -0.5, 0],
+        ],
+        'agent_goals': [
+            [0.3, 0.5, 0],
+            #[-0.3, 0.5, 0]
+        ],
+        'max_time_steps': 40000,
+        'communication_range': 2.0,
+        'render': True,
+    })
+    env.reset()
+    rewards = 0
+    turn = 0
+    forward = 0
+    while True:
+        keys = p.getKeyboardEvents()
+
+        for k,v in keys.items():
+            if (k == p.B3G_RIGHT_ARROW and (v&p.KEY_WAS_TRIGGERED)):
+                    turn = -np.pi/8
+            if (k == p.B3G_RIGHT_ARROW and (v&p.KEY_WAS_RELEASED)):
+                    turn = 0
+            if (k == p.B3G_LEFT_ARROW and (v&p.KEY_WAS_TRIGGERED)):
+                    turn = np.pi/8
+            if (k == p.B3G_LEFT_ARROW and (v&p.KEY_WAS_RELEASED)):
+                    turn = 0
+
+            if (k == p.B3G_UP_ARROW and (v&p.KEY_WAS_TRIGGERED)):
+                    forward=10
+            if (k == p.B3G_UP_ARROW and (v&p.KEY_WAS_RELEASED)):
+                    forward=0
+            if (k == p.B3G_DOWN_ARROW and (v&p.KEY_WAS_TRIGGERED)):
+                    forward=-10
+            if (k == p.B3G_DOWN_ARROW and (v&p.KEY_WAS_RELEASED)):
+                    forward=0
+        obs, reward, done, info = env.step([[turn, forward]])
+        rewards += reward
+        
+        #print(rewards)
+        if done:
+            rewards = 0
+            turn = 0
+            forward = 0
+            env.reset()
+
+#test_env_keyboard()
 
 def test_env():
     env = SimEnv({
@@ -169,16 +223,17 @@ def test_env():
             #[-0.3, 0.5, 0]
         ],
         'max_time_steps': 4000,
+        'communication_range': 2.0,
         'render': True,
     })
     env.reset()
     for i in range(1):
-        actions = [[[np.pi/8, 0]]]*300 + [[[0, 0.2]]]*800 + [[[-np.pi/8, 0]]]*300 + [[[0, 0.2]]]*800
+        actions = [[[np.pi/8, 0]]]*300 + [[[0, 0.2]]]*800 + [[[-np.pi/8, 0]]]*300 + [[[0, 0.2]]]*100 + [[[np.pi/8, 0]]]*300 + [[[0, 0.2]]]*400
         rewards = 0
         for a in actions:
             obs, reward, done, info = env.step(a)
             rewards += reward
-        print(rewards)
+        print(rewards, done)
         np.set_printoptions(suppress=True)
         time.sleep(1/240)
 #test_env()
