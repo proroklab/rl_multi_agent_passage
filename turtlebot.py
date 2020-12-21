@@ -44,8 +44,11 @@ class Turtlebot():
         return np.array(p.getMatrixFromQuaternion(self.orientation if orientation is None else orientation)).reshape(3,3)
 
     def set_velocity(self, angular, lateral):
-        assert not np.isnan(angular)
-        assert not np.isnan(lateral)
+        #if angular > 0 and lateral > 0:
+        if np.isnan(angular) or np.isnan(lateral):
+            import pdb; pdb.set_trace()
+        #assert not np.isnan(angular)
+        #assert not np.isnan(lateral)
         self.setpoint_forward_speed = np.clip(lateral, *self.CONFIG['limits']['forward_speed'])
         self.setpoint_yaw_rate = np.clip(angular, *self.CONFIG['limits']['yaw_rate'])
 
@@ -63,15 +66,20 @@ class Turtlebot():
         origin_pose = np.array([0, 0, 0])
         m = self.get_rotation_matrix()
         goal_relative = (self.goal_pos - self.position) @ m
-        gap_relative = (origin_pose - self.position) @ m
+        #gap_relative = (origin_pose - self.position) @ m
         speed = np.array([self.lateral_speed[0], self.ang_speed[2]])
-        obs = np.hstack([gap_relative, goal_relative, speed])
+        obs = np.hstack([self.position, goal_relative, speed])
         dst_goal = np.sqrt(np.sum(goal_relative**2))
+        #reward = -dst_goal
         reward = 0
         if dst_goal < self.closest_dist_to_goal:
             reward = self.closest_dist_to_goal - dst_goal
             self.closest_dist_to_goal = dst_goal
         done = dst_goal < 0.1
+
+        if not np.all(np.isfinite(obs)) or not np.isfinite(reward):
+             import pdb; pdb.set_trace()
+
         return obs, reward, done
 
 class SimEnv(gym.Env):
@@ -79,18 +87,18 @@ class SimEnv(gym.Env):
         self.cfg = config
         n_agents = len(self.cfg['agent_poses'])
         self.action_space = gym.spaces.Tuple(
-            (gym.spaces.Box(-np.inf, np.inf, shape=(2,), dtype=float),)*n_agents) # velocity yaw and forward
+            (gym.spaces.Box(low=np.array([-np.pi/8, -0.2]), high=np.array([np.pi/8, 0.2]), shape=(2,), dtype=float),)*n_agents) # velocity yaw and forward
 
         self.observation_space = gym.spaces.Dict({
             # current pose relative to goal (x,y)
             # current pose relative to origin (and therefore gap in wall) (x, y, phi)
             # current velocity (lin, ang)
             'agent_obs': gym.spaces.Tuple(
-                (gym.spaces.Box(-np.inf, np.inf, shape=(8,), dtype=np.float32),)*n_agents
+                (gym.spaces.Box(-10000, 10000, shape=(8,), dtype=float),)*n_agents
             ),
-            'gso': gym.spaces.Box(-np.inf, np.inf, shape=(n_agents, n_agents)),
+            'gso': gym.spaces.Box(-1, 1, shape=(n_agents, n_agents), dtype=float),
             # agent obs and current absolute pose
-            'state': gym.spaces.Box(low=-np.inf, high=np.inf, shape=(n_agents, 11)),
+            'state': gym.spaces.Box(low=-10000, high=10000, shape=(n_agents, 11)),
         })
 
         self.client = p.connect(p.GUI if self.cfg['render'] else p.DIRECT)
@@ -145,7 +153,8 @@ class SimEnv(gym.Env):
             infos['rewards'][i] = r
             reward += r
 
-        p.stepSimulation(physicsClientId=self.client)
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.client)
 
         state = []
         for r, o in zip(self.robots, obs):
@@ -153,87 +162,61 @@ class SimEnv(gym.Env):
         obs = {
             'agent_obs': tuple(obs),
             'gso': self.compute_gso(),
-            'state': state
+            'state': np.array(state)
         }
+        if not np.all(np.isfinite(obs['state'])) or not np.all(np.isfinite(obs['gso'])):
+             import pdb; pdb.set_trace()
+
         #print(self.timestep)
         done = all(dones) or self.timestep > self.cfg['max_time_steps']
         #print("INF", actions, infos, len(self.robots))
         return obs, reward, done, infos
 
-def test_env_keyboard():
+class CentrSimEnv(gym.Env):
+    def __init__(self, config):
+        self.cfg = config
+        n_agents = len(self.cfg['agent_poses'])
+        self.action_space = gym.spaces.Box(low=np.array([-np.pi/8, -0.2]*n_agents), high=np.array([np.pi/8, 0.2]*n_agents), shape=(2*n_agents,), dtype=float)
 
-    env = SimEnv({
-        'agent_poses': [
-            [-0.3, -0.5, 0],
-            #[0.3, -0.5, 0],
-        ],
-        'agent_goals': [
-            [0.3, 0.5, 0],
-            #[-0.3, 0.5, 0]
-        ],
-        'max_time_steps': 40000,
-        'communication_range': 2.0,
-        'render': True,
-    })
-    env.reset()
-    rewards = 0
-    turn = 0
-    forward = 0
-    while True:
-        keys = p.getKeyboardEvents()
+        self.observation_space = gym.spaces.Box(-10000, 10000, shape=(8*n_agents,), dtype=float)
 
-        for k,v in keys.items():
-            if (k == p.B3G_RIGHT_ARROW and (v&p.KEY_WAS_TRIGGERED)):
-                    turn = -np.pi/8
-            if (k == p.B3G_RIGHT_ARROW and (v&p.KEY_WAS_RELEASED)):
-                    turn = 0
-            if (k == p.B3G_LEFT_ARROW and (v&p.KEY_WAS_TRIGGERED)):
-                    turn = np.pi/8
-            if (k == p.B3G_LEFT_ARROW and (v&p.KEY_WAS_RELEASED)):
-                    turn = 0
+        self.client = p.connect(p.GUI if self.cfg['render'] else p.DIRECT)
+        p.setGravity(0, 0, -9.81, physicsClientId=self.client)
+        p.setAdditionalSearchPath(pybullet_data.getDataPath())
+        self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.client)
+        self.wall_id = p.loadURDF("wall.urdf", physicsClientId=self.client)
 
-            if (k == p.B3G_UP_ARROW and (v&p.KEY_WAS_TRIGGERED)):
-                    forward=10
-            if (k == p.B3G_UP_ARROW and (v&p.KEY_WAS_RELEASED)):
-                    forward=0
-            if (k == p.B3G_DOWN_ARROW and (v&p.KEY_WAS_TRIGGERED)):
-                    forward=-10
-            if (k == p.B3G_DOWN_ARROW and (v&p.KEY_WAS_RELEASED)):
-                    forward=0
-        obs, reward, done, info = env.step([[turn, forward]])
-        rewards += reward
-        
-        #print(rewards)
-        if done:
-            rewards = 0
-            turn = 0
-            forward = 0
-            env.reset()
+        self.robots = []
+        for initial_pose, goal_pose in zip(self.cfg['agent_poses'], self.cfg['agent_goals']):
+            self.robots.append(Turtlebot(self.client, initial_pose, goal_pose))
 
-#test_env_keyboard()
+        self.reset()
 
-def test_env():
-    env = SimEnv({
-        'agent_poses': [
-            [-0.3, -0.5, 0],
-            #[0.3, -0.5, 0],
-        ],
-        'agent_goals': [
-            [0.3, 0.5, 0],
-            #[-0.3, 0.5, 0]
-        ],
-        'max_time_steps': 4000,
-        'communication_range': 2.0,
-        'render': True,
-    })
-    env.reset()
-    for i in range(1):
-        actions = [[[np.pi/8, 0]]]*300 + [[[0, 0.2]]]*800 + [[[-np.pi/8, 0]]]*300 + [[[0, 0.2]]]*100 + [[[np.pi/8, 0]]]*300 + [[[0, 0.2]]]*400
-        rewards = 0
-        for a in actions:
-            obs, reward, done, info = env.step(a)
-            rewards += reward
-        print(rewards, done)
-        np.set_printoptions(suppress=True)
-        time.sleep(1/240)
-#test_env()
+    def __del__(self):
+        p.disconnect()
+
+    def reset(self):
+        self.timestep = 0
+        for robot in self.robots:
+            robot.reset()
+        return self.step([0, 0]*len(self.robots))[0]
+
+    def step(self, actions):
+        self.timestep += 1
+        obs, dones = [], []
+        reward = 0
+        for i, (robot, action) in enumerate(zip(self.robots, np.array(actions).reshape(-1, len(self.robots)))):
+            robot.set_velocity(action[0], action[1])
+            o, r, d = robot.step()
+            obs.append(o)
+            dones.append(d)
+            reward += r
+
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.client)
+
+
+        done = all(dones) or self.timestep > self.cfg['max_time_steps']
+        #print("INF", actions, infos, len(self.robots))
+        return np.concatenate(obs), reward, done, {}
+

@@ -63,6 +63,8 @@ class Model(TorchModelV2, nn.Module):
             self.activation(),
             nn.Linear(64, 32),
             self.activation(),
+            nn.Linear(32, 32),
+            self.activation(),
             nn.Linear(32, self.cfg['graph_features']),
             self.activation(),
         )
@@ -88,7 +90,9 @@ class Model(TorchModelV2, nn.Module):
             nn.Linear(logits_inp_features, 64),
             self.activation(),
             nn.Linear(64, 32),
-            self.activation()
+            self.activation(),
+            nn.Linear(32, 32),
+            self.activation(),
         ]
         self.outputs_per_agent = int(num_outputs/self.n_agents)
         logit_linear = nn.Linear(32, self.outputs_per_agent)
@@ -104,7 +108,11 @@ class Model(TorchModelV2, nn.Module):
             self.activation(),
             nn.Linear(64, 32),
             self.activation(),
-            nn.Linear(32, self.n_agents),
+            nn.Linear(32, 16),
+            self.activation(),
+            nn.Linear(16, 16),
+            self.activation(),
+            nn.Linear(16, self.n_agents),
             self.activation(),
         )
         summary(self.values, device="cpu", input_size=(state_shape[0]*state_shape[1],))
@@ -132,6 +140,9 @@ class Model(TorchModelV2, nn.Module):
 
         for i in range(self.n_agents):
             outputs[:, i] = self.output(shared_feature[..., i])
+
+        if not torch.all(torch.isfinite(outputs)):
+            import pdb; pdb.set_trace()
 
         return outputs.view(batch_size, self.n_agents*self.outputs_per_agent), state
 
