@@ -21,33 +21,46 @@ if __name__ == '__main__':
     ModelCatalog.register_custom_model("model", Model)
     ModelCatalog.register_custom_action_dist("hom_multi_action", TorchHomogeneousMultiActionDistribution)
 
+    num_workers = 16
     tune.run(
         MultiPPOTrainer,
         #restore="/home/jb2270/ray_results/PPO/PPO_world_0_2020-04-04_23-01-16c532w9iy/checkpoint_100/checkpoint-100",
         checkpoint_freq=1,
         keep_checkpoints_num=2,
-        #local_dir="/tmp",
-        loggers=DEFAULT_LOGGERS + (WandbLogger,),
+        local_dir="/tmp",
+        #loggers=DEFAULT_LOGGERS + (WandbLogger,),
         config={
             "framework": "torch",
-            "_use_trajectory_view_api": False,
             "env": "pybullet",
-            "lambda": 0.95,
-            "kl_coeff": 0.5,
-            "clip_rewards": True,
+            #"lambda": 0.95,
             "clip_param": 0.2,
-            #"entropy_coeff": 0.01,
-            "train_batch_size": 80000,
-            "sgd_minibatch_size": 16384,
-            "num_sgd_iter": 32,
-            "num_workers": 4,
-            "num_envs_per_worker": 32,
-            "lr": 3e-4,
-            "gamma": 0.99,
-            "batch_mode": "truncate_episodes",
+            "entropy_coeff": 0.001,
+            "train_batch_size": 100000,
+            "sgd_minibatch_size": 32768,
+            "num_sgd_iter": 20,
+            "num_gpus": 0.5,
+            "num_workers": 16,
+            #"num_gpus_per_worker": 0.5/num_workers,
+            "num_envs_per_worker": 1,
+            "lr": 1e-4,
+            "gamma": 0.995,
+            "batch_mode": "complete_episodes", # complete_episodes, truncate_episodes
             "observation_filter": "NoFilter",
-            "num_gpus": 1,
-            "model": model,
+            "model": {
+                "custom_model": "model",
+                "custom_action_dist": "hom_multi_action",
+                "custom_model_config": {
+                    "graph_tabs": 2,
+                    "graph_edge_features": 1,
+
+                    "graph_features": 64,
+
+                    "graph_aggregation": "sum",
+
+                    "activation": "relu",
+                    "agent_split": 0,
+                }
+            },
             "logger_config": {
                 "wandb": {
                     "project": "rl_dynamic_control",
@@ -58,12 +71,26 @@ if __name__ == '__main__':
             "env_config": {
                 'wall': True,
                 'agent_poses': [
+                    [0.0, -0.5, 0],
                     [-0.3, -0.5, 0],
                     [0.3, -0.5, 0],
+                    #[0.0, -0.8, 0],
+                    #[-0.3, -0.8, 0],
+                    #[0.3, -0.8, 0],
+                    #[0.0, -1.1, 0],
+                    #[-0.3, -1.1, 0],
+                    #[0.3, -1.1, 0],
                 ],
                 'agent_goals': [
+                    #[0.0, 1.1, 0],
+                    #[-0.3, 1.1, 0],
+                    #[0.3, 1.1, 0],
+                    #[0.0, 0.8, 0],
+                    #[-0.3, 0.8, 0],
+                    #[0.3, 0.8, 0],
+                    [0.0, 0.5, 0],
                     [0.3, 0.5, 0],
-                    [-0.3, 0.5, 0]
+                    [-0.3, 0.5, 0],
                 ],
                 'max_time_steps': 3000,
                 'communication_range': 2.0,
