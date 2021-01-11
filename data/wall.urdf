@@ -10,25 +10,25 @@
       <geometry>
         <box size="2 0.05 0.5"/>
       </geometry>
-      <origin xyz="1.15 0 0"/>
+      <origin xyz="1.2 0 0"/>
     </visual>
     <visual>
       <geometry>
         <box size="2 0.05 0.5"/>
       </geometry>
-      <origin xyz="-1.15 0 0"/>
+      <origin xyz="-1.2 0 0"/>
     </visual>
     <collision>
       <geometry>
         <box size="2 0.05 0.5"/>
       </geometry>
-      <origin xyz="1.15 0 0"/>
+      <origin xyz="1.2 0 0"/>
     </collision>
     <collision>
       <geometry>
         <box size="2 0.05 0.5"/>
       </geometry>
-      <origin xyz="-1.15 0 0"/>
+      <origin xyz="-1.2 0 0"/>
     </collision>
   </link>
 </robot>

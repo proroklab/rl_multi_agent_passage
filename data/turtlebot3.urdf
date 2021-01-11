@@ -35,7 +35,13 @@
   <material name="white">
     <color rgba="1.0 1.0 1.0 1.0"/>
   </material>
-  <link name="base_footprint"/>
+  <link name="base_footprint">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="1.000"/>
+      <inertia ixx="0.000" ixy="0.0" ixz="0.0" iyy="0.000" iyz="0.0" izz="0.000"/>
+    </inertial>
+  </link>
   <joint name="base_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
@@ -136,7 +142,13 @@
     <child link="imu_link"/>
     <origin rpy="0 0 0" xyz="-0.032 0 0.068"/>
   </joint>
-  <link name="imu_link"/>
+  <link name="imu_link">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="0.000"/>
+      <inertia ixx="0.000" ixy="0.0" ixz="0.0" iyy="0.000" iyz="0.0" izz="0.000"/>
+    </inertial>
+  </link>
   <joint name="scan_joint" type="fixed">
     <parent link="base_link"/>
     <child link="base_scan"/>
