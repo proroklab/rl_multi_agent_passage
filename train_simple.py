@@ -40,7 +40,7 @@ if __name__ == '__main__':
             #"lambda": 0.95,
             "clip_param": 0.2,
             "entropy_coeff": 0.001,
-            "train_batch_size": 5000,
+            "train_batch_size": 10000,
             "sgd_minibatch_size": 1024,
             "num_sgd_iter": 10,
             "num_gpus": 0.5,
@@ -68,7 +68,7 @@ if __name__ == '__main__':
             },
             "env_config": {
                 'world_shape': (3., 3.),
-                'agent_formation': [[-0.2, 0], [0.2, 0]], #[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
+                'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
                 'max_time_steps': 300,
                 'communication_range': 2.0,
                 'render': False,

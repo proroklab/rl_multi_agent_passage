@@ -214,11 +214,11 @@ class SimpleEnv(gym.Env):
                 else:
                     r = 0
             if pos_map_status == "wall":
-                world_done = True
-                r -= 10
+                #world_done = True
+                r -= 1
             #r -= 1 # incentivize speed
-            #elif pos_map_status == "agent":
-            #    r -= 10
+            elif pos_map_status == "agent":
+                r -= 1
 
             obs.append({'obs': o})
             infos['rewards'][i] = r
