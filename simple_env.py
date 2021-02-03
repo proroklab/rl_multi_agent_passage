@@ -102,7 +102,7 @@ class Turtlebot():
         return self.orientation.as_matrix()
 
     def step(self):
-        dt=0.1
+        dt=0.01
         new_pos = self.position + np.array([self.vx, self.vy])*dt
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
 
