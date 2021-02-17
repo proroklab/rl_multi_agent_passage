@@ -13,7 +13,7 @@ from ray.tune.registry import register_env
 from ray.tune.logger import pretty_print, DEFAULT_LOGGERS, TBXLogger
 from ray.tune.integration.wandb import WandbLogger
 
-from model import Model
+#from model import Model
 from model_2 import Model as Model2
 from ray.rllib.models import ModelCatalog
 from adversarial_comms.trainers.multiagent_ppo import MultiPPOTrainer
@@ -25,7 +25,7 @@ def initialize():
     ray.init()
 
     register_env("simple", lambda config: SimpleEnv(config))
-    ModelCatalog.register_custom_model("model", Model)
+    #ModelCatalog.register_custom_model("model", Model)
     ModelCatalog.register_custom_model("model2", Model2)
     ModelCatalog.register_custom_action_dist("hom_multi_action", TorchHomogeneousMultiActionDistribution)
 
@@ -71,8 +71,8 @@ def train():
             "num_sgd_iter": 24,
             "num_gpus": 0.5,
             "num_workers": num_workers,
-            "num_gpus_per_worker": 0.5/num_workers,
-            "num_envs_per_worker": 8,
+            #"num_gpus_per_worker": 0.5/num_workers,
+            "num_envs_per_worker": 1,
             "lr": 5e-5,
             "gamma": 0.995,
             "batch_mode": "complete_episodes", # complete_episodes, truncate_episodes
