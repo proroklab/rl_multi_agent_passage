@@ -172,6 +172,7 @@ class Turtlebot:
         self.setpoint_vx = 0
         self.setpoint_vy = 0
         self.reached_goal = False
+        self.reached_gap = False
 
     def set_world_velocity(self, vx, vy):
         # if angular > 0 and lateral > 0:
@@ -218,7 +219,7 @@ class Turtlebot:
             [
                 self.position,
                 self.goal_pos - self.position,
-                np.array([1.5, 1.5]) - self.position,
+                #np.array([1.5, 1.5]) - self.position,
             ]
         )
 
@@ -246,7 +247,7 @@ class SimpleEnv(gym.Env):
                         gym.spaces.Dict(
                             {
                                 "obs": gym.spaces.Box(
-                                    -10000, 10000, shape=(6,), dtype=float
+                                    -10000, 10000, shape=(4,), dtype=float
                                 ),
                                 # "img": gym.spaces.Box(0, 1, shape=(20, 30, 2), dtype=int),
                                 # "state": gym.spaces.Box(low=-10000, high=10000, shape=(6,))
@@ -319,7 +320,11 @@ class SimpleEnv(gym.Env):
             robot.set_world_velocity(action[0], action[1])
             o, pos_map_status = robot.step()
 
-            _, goal_vector = get_velocity(robot.position, robot.goal_pos)
+            #_, goal_vector = get_velocity(robot.position, robot.goal_pos)
+            if not robot.reached_gap:
+                goal_vector = np.array([1.5, 1.5]) - robot.position
+            else:
+                goal_vector = robot.goal_pos - robot.position
             world_speed = np.array([robot.vx, robot.vy])
             r = 0
             vw = np.linalg.norm(world_speed)
@@ -328,8 +333,11 @@ class SimpleEnv(gym.Env):
                     np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
                     * vw
                 )
-            if np.linalg.norm(robot.goal_pos - robot.position, ord=2) < 0.1:
-                if not robot.reached_goal:
+            if np.linalg.norm(goal_vector, ord=2) < 0.1:
+                if not robot.reached_gap:
+                    r = 10
+                    robot.reached_gap = True
+                elif not robot.reached_goal:
                     r = 10
                     robot.reached_goal = True
                 else:
