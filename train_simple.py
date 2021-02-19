@@ -99,6 +99,8 @@ def train():
                 'max_time_steps': 500,
                 'communication_range': 2.0,
                 'render': False,
+                'max_lateral_speed': 1.0,
+                'max_angular_speed': 5*np.pi,
             }})
 
 

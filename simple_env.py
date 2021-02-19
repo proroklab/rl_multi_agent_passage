@@ -6,6 +6,16 @@ import pygame
 
 from scipy.spatial.transform import Rotation as R
 
+DEFAULT_CFG = {
+    'action_coord_frame': "differential", # global
+    'world_shape': (3., 3.),
+    'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
+    'max_time_steps': 500,
+    'communication_range': 2.0,
+    'max_lateral_speed': 1.0,
+    'max_angular_speed': 5*np.pi,
+}
+
 X = 1
 Y = 0
 
@@ -147,19 +157,13 @@ class WorldMap:
 
 
 class Turtlebot:
-    CONFIG = {
-        "limits": {
-            "forward_speed": (-1, 1),
-            "yaw_rate": (-5*np.pi, 5*np.pi),
-            "vx": (-1, 1),
-            "vy": (-1, 1),
-        },
-    }
 
-    def __init__(self, index, coord_frame, world_map):
+    def __init__(self, index, coord_frame, max_lateral_speed, max_angular_speed, world_map):
         self.index = index
         self.world_map = world_map
         self.coord_frame = coord_frame
+        self.max_lateral_speed = max_lateral_speed
+        self.max_angular_speed = max_angular_speed
 
         self.reset(np.array([0, 0]), 0, np.array([0, 0]))
 
@@ -187,12 +191,12 @@ class Turtlebot:
             #velocity[0] = w
 
             self.setpoint_lateral = np.clip(
-                u, *self.CONFIG["limits"]["forward_speed"] # velocity[1]
+                u, -self.max_lateral_speed, self.max_lateral_speed # velocity[1]
             )
-            self.setpoint_angular = np.clip(w, *self.CONFIG["limits"]["yaw_rate"])
+            self.setpoint_angular = np.clip(w, -self.max_angular_speed, self.max_angular_speed)
         elif self.coord_frame == "global":
-            self.setpoint_vx = np.clip(velocity[1], *self.CONFIG["limits"]["vx"])
-            self.setpoint_vy = np.clip(velocity[0], *self.CONFIG["limits"]["vy"])
+            self.setpoint_vx = np.clip(velocity[1], -self.max_lateral_speed, self.max_lateral_speed)
+            self.setpoint_vy = np.clip(velocity[0], -self.max_lateral_speed, self.max_lateral_speed)
         else:
             raise Exception("invalid coord frame")
 
@@ -280,7 +284,15 @@ class SimpleEnv(gym.Env):
 
         self.robots = []
         for i in range(len(self.cfg["agent_formation"])):
-            self.robots.append(Turtlebot(i, self.cfg["action_coord_frame"], self.map))
+            self.robots.append(
+                Turtlebot(
+                    i,
+                    self.cfg["action_coord_frame"],
+                    self.cfg["max_lateral_speed"],
+                    self.cfg["max_angular_speed"],
+                    self.map
+                )
+            )
 
         self.display = None
         self.render_frame_index = 0
