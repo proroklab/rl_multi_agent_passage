@@ -149,81 +149,95 @@ class WorldMap:
 class Turtlebot:
     CONFIG = {
         "limits": {
-            "forward_speed": (-0.2, 0.2),
-            "yaw_rate": (-np.pi / 8, np.pi / 8),
+            "forward_speed": (-1, 1),
+            "yaw_rate": (-5*np.pi, 5*np.pi),
             "vx": (-1, 1),
             "vy": (-1, 1),
         },
     }
 
-    def __init__(self, index, world_map):
+    def __init__(self, index, coord_frame, world_map):
         self.index = index
         self.world_map = world_map
+        self.coord_frame = coord_frame
 
-        self.reset(np.array([0, 0]), np.array([0, 0]))
+        self.reset(np.array([0, 0]), 0, np.array([0, 0]))
 
-    def reset(self, start_pos, goal_pos):
-        # self.orientation = R.from_euler("z", 90, degrees=True)
+    def reset(self, start_pos, start_orientation, goal_pos):
+        self.orientation = R.from_euler("z", start_orientation)
         self.position = start_pos.copy()
         self.goal_pos = goal_pos.copy()
 
-        self.setpoint_forward_speed = 0
-        self.setpoint_yaw_rate = 0
+        self.setpoint_lateral = 0
+        self.setpoint_angular = 0
         self.setpoint_vx = 0
         self.setpoint_vy = 0
         self.reached_goal = False
         self.reached_gap = False
 
-    def set_world_velocity(self, vx, vy):
-        # if angular > 0 and lateral > 0:
-        # if np.isnan(angular) or np.isnan(lateral):
-        # import pdb; pdb.set_trace()
-        # assert not np.isnan(angular)
-        # assert not np.isnan(lateral)
-        self.setpoint_vx = np.clip(vx, *self.CONFIG["limits"]["vx"])
-        self.setpoint_vy = np.clip(vy, *self.CONFIG["limits"]["vy"])
+    def set_velocity(self, velocity):
+        assert not np.any(np.isnan(velocity))
+        if self.coord_frame == "differential":
+            epsilon = -0.01
+            vx, vy = velocity
+            psi = self.orientation.as_euler('xyz')[2]
+            u = vx*np.cos(psi) + vy*np.sin(psi)  # [m/s]
+            w = (1/epsilon)*(-vx*np.sin(psi) + vy*np.cos(psi))  # [rad/s] going counter-clockwise.
+            #velocity[1] = u
+            #velocity[0] = w
 
-    def set_velocity(self, angular, lateral):
-        # if angular > 0 and lateral > 0:
-        if np.isnan(angular) or np.isnan(lateral):
-            import pdb
-
-            pdb.set_trace()
-        # assert not np.isnan(angular)
-        # assert not np.isnan(lateral)
-        self.setpoint_forward_speed = np.clip(
-            lateral, *self.CONFIG["limits"]["forward_speed"]
-        )
-        self.setpoint_yaw_rate = np.clip(angular, *self.CONFIG["limits"]["yaw_rate"])
+            self.setpoint_lateral = np.clip(
+                u, *self.CONFIG["limits"]["forward_speed"] # velocity[1]
+            )
+            self.setpoint_angular = np.clip(w, *self.CONFIG["limits"]["yaw_rate"])
+        elif self.coord_frame == "global":
+            self.setpoint_vx = np.clip(velocity[1], *self.CONFIG["limits"]["vx"])
+            self.setpoint_vy = np.clip(velocity[0], *self.CONFIG["limits"]["vy"])
+        else:
+            raise Exception("invalid coord frame")
 
     def get_rotation_matrix(self):
         return self.orientation.as_matrix()
 
     def step(self):
         dt = 0.01
-        new_pos = self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * dt
+        prev_pos = self.position.copy()
+
+        if self.coord_frame == "differential":
+            new_pos = self.position + self.orientation.apply(np.array([self.setpoint_lateral, 0, 0]) * dt)[:2]
+            self.orientation *= R.from_euler("xyz", np.array([0, 0, -self.setpoint_angular]) * dt)
+        elif self.coord_frame == "global":
+            new_pos = self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * dt
+        else:
+            raise Exception("invalid coord frame")
+
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
 
         if pos_map_status == "ok":
             self.position = np.clip(new_pos, [0, 0], self.world_map.dim)
-            self.vx = self.setpoint_vx
-            self.vy = self.setpoint_vy
-        else:
-            self.vx = 0
-            self.vy = 0
 
-        # self.position += self.orientation.apply(np.array([self.setpoint_forward_speed, 0, 0]) * dt)
-        # self.orientation *= R.from_euler("xyz", np.array([0, 0, -self.setpoint_yaw_rate]) * dt)
+        self.v_world = (self.position.copy() - prev_pos)/dt
 
-        obs = np.hstack(
-            [
-                self.position,
-                self.goal_pos - self.position,
-                #np.array([1.5, 1.5]) - self.position,
+        features = [
+            self.position,
+            self.goal_pos - self.position
+        ]
+        if self.coord_frame == "differential":
+            orientation_euler = self.orientation.as_euler('xyz')[2]
+            #dp_gap = np.array([1.5, 1.5]) - self.position
+            #angle_to_gap = np.arctan2(dp_gap[1], dp_gap[0]) - orientation_euler
+            #dp_goal = self.goal_pos - self.position
+            #angle_to_goal = np.arctan2(dp_goal[1], dp_goal[0]) - orientation_euler
+            features += [
+                np.sin(orientation_euler),
+                np.cos(orientation_euler),
+                #np.sin(angle_to_gap),
+                #np.cos(angle_to_gap),
+                #np.sin(angle_to_goal),
+                #np.cos(angle_to_goal),
             ]
-        )
 
-        return obs, pos_map_status
+        return np.hstack(features), pos_map_status
 
 
 class SimpleEnv(gym.Env):
@@ -237,6 +251,10 @@ class SimpleEnv(gym.Env):
             * n_agents
         )  # velocity yaw and forward
 
+        obs_shapes = {
+            "global": 4,
+            "differential": 6
+        }
         self.observation_space = gym.spaces.Dict(
             {
                 # current pose relative to goal (x,y)
@@ -247,10 +265,8 @@ class SimpleEnv(gym.Env):
                         gym.spaces.Dict(
                             {
                                 "obs": gym.spaces.Box(
-                                    -10000, 10000, shape=(4,), dtype=float
+                                    -10000, 10000, shape=(obs_shapes[self.cfg["action_coord_frame"]],), dtype=float
                                 ),
-                                # "img": gym.spaces.Box(0, 1, shape=(20, 30, 2), dtype=int),
-                                # "state": gym.spaces.Box(low=-10000, high=10000, shape=(6,))
                             }
                         ),
                     )
@@ -264,7 +280,7 @@ class SimpleEnv(gym.Env):
 
         self.robots = []
         for i in range(len(self.cfg["agent_formation"])):
-            self.robots.append(Turtlebot(i, self.map))
+            self.robots.append(Turtlebot(i, self.cfg["action_coord_frame"], self.map))
 
         self.display = None
         self.render_frame_index = 0
@@ -290,7 +306,8 @@ class SimpleEnv(gym.Env):
         goals = rotated_formation + offset_goal
 
         for robot, start, goal in zip(self.robots, starts, goals):
-            robot.reset(start, goal)
+            start_rot = self.random_state.uniform(-np.pi, np.pi)
+            robot.reset(start, start_rot, goal)
         return self.step([[0, 0]] * len(self.robots))[0]
 
     def compute_gso(self):
@@ -317,15 +334,16 @@ class SimpleEnv(gym.Env):
 
         world_done = self.timestep > self.cfg["max_time_steps"]
         for i, (robot, action) in enumerate(zip(self.robots, actions)):
-            robot.set_world_velocity(action[0], action[1])
+            robot.set_velocity(action)
+            
             o, pos_map_status = robot.step()
 
-            #_, goal_vector = get_velocity(robot.position, robot.goal_pos)
-            if not robot.reached_gap:
-                goal_vector = np.array([1.5, 1.5]) - robot.position
-            else:
-                goal_vector = robot.goal_pos - robot.position
-            world_speed = np.array([robot.vx, robot.vy])
+            _, goal_vector = get_velocity(robot.position, robot.goal_pos)
+            #if not robot.reached_gap:
+            #    goal_vector = np.array([1.5, 1.5]) - robot.position
+            #else:
+            #    goal_vector = robot.goal_pos - robot.position
+            world_speed = robot.v_world #np.array([robot.vx, robot.vy])
             r = 0
             vw = np.linalg.norm(world_speed)
             if vw > 0:
@@ -333,11 +351,14 @@ class SimpleEnv(gym.Env):
                     np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
                     * vw
                 )
-            if np.linalg.norm(goal_vector, ord=2) < 0.1:
-                if not robot.reached_gap:
-                    r = 10
-                    robot.reached_gap = True
-                elif not robot.reached_goal:
+                #orientation_euler = robot.orientation.as_euler('xyz')[2]
+                #angle_to_goal = np.abs((np.arctan2(goal_vector[1], goal_vector[0]) - orientation_euler+np.pi) % (2 * np.pi) - np.pi)
+                #r -= angle_to_goal/50)
+            if np.linalg.norm(robot.goal_pos - robot.position, ord=2) < 0.1:
+                #if not robot.reached_gap:
+                #    r = 10
+                #    robot.reached_gap = True
+                if not robot.reached_goal:
                     r = 10
                     robot.reached_goal = True
                 else:
@@ -349,7 +370,7 @@ class SimpleEnv(gym.Env):
             obs.append({"obs": o})
             infos["rewards"][i] = r
             reward += r
-
+        #print(obs)
         # state = []
         # for r, o in zip(self.robots, obs):
         #    state.append(np.concatenate([o, np.array(r.position)]))
@@ -384,6 +405,10 @@ class SimpleEnv(gym.Env):
                 robot.goal_pos / self.map.dim * [200, 200],
                 2,
             )
+
+            if self.cfg["action_coord_frame"] == "differential":
+                v = robot.orientation.apply(np.array([0.5, 0, 0]))[:2]
+                pygame.draw.line(self.display, (0,255,0), robot.position/self.map.dim*[200,200], (robot.position + v)/self.map.dim*[200,200], 2)
 
         """
         for y in np.arange(0, 3, 0.1):

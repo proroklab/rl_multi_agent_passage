@@ -93,6 +93,7 @@ def train():
                 }
             },
             "env_config": {
+                'action_coord_frame': "differential", # global
                 'world_shape': (3., 3.),
                 'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
                 'max_time_steps': 500,
