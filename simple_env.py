@@ -7,7 +7,6 @@ import pygame
 from scipy.spatial.transform import Rotation as R
 
 DEFAULT_CFG = {
-    'action_coord_frame': "differential", # global
     'world_shape': (3., 3.),
     'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
     'max_time_steps': 500,
@@ -158,10 +157,9 @@ class WorldMap:
 
 class Turtlebot:
 
-    def __init__(self, index, coord_frame, max_lateral_speed, max_angular_speed, world_map):
+    def __init__(self, index, max_lateral_speed, max_angular_speed, world_map):
         self.index = index
         self.world_map = world_map
-        self.coord_frame = coord_frame
         self.max_lateral_speed = max_lateral_speed
         self.max_angular_speed = max_angular_speed
 
@@ -181,24 +179,8 @@ class Turtlebot:
 
     def set_velocity(self, velocity):
         assert not np.any(np.isnan(velocity))
-        if self.coord_frame == "differential":
-            epsilon = -0.01
-            vx, vy = velocity
-            psi = self.orientation.as_euler('xyz')[2]
-            u = vx*np.cos(psi) + vy*np.sin(psi)  # [m/s]
-            w = (1/epsilon)*(-vx*np.sin(psi) + vy*np.cos(psi))  # [rad/s] going counter-clockwise.
-            #velocity[1] = u
-            #velocity[0] = w
-
-            self.setpoint_lateral = np.clip(
-                u, -self.max_lateral_speed, self.max_lateral_speed # velocity[1]
-            )
-            self.setpoint_angular = np.clip(w, -self.max_angular_speed, self.max_angular_speed)
-        elif self.coord_frame == "global":
-            self.setpoint_vx = np.clip(velocity[1], -self.max_lateral_speed, self.max_lateral_speed)
-            self.setpoint_vy = np.clip(velocity[0], -self.max_lateral_speed, self.max_lateral_speed)
-        else:
-            raise Exception("invalid coord frame")
+        self.setpoint_vx = np.clip(velocity[1], -self.max_lateral_speed, self.max_lateral_speed)
+        self.setpoint_vy = np.clip(velocity[0], -self.max_lateral_speed, self.max_lateral_speed)
 
     def get_rotation_matrix(self):
         return self.orientation.as_matrix()
@@ -206,14 +188,7 @@ class Turtlebot:
     def step(self):
         dt = 0.01
         prev_pos = self.position.copy()
-
-        if self.coord_frame == "differential":
-            new_pos = self.position + self.orientation.apply(np.array([self.setpoint_lateral, 0, 0]) * dt)[:2]
-            self.orientation *= R.from_euler("xyz", np.array([0, 0, -self.setpoint_angular]) * dt)
-        elif self.coord_frame == "global":
-            new_pos = self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * dt
-        else:
-            raise Exception("invalid coord frame")
+        new_pos = self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * dt
 
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
 
@@ -226,20 +201,6 @@ class Turtlebot:
             self.position,
             self.goal_pos - self.position
         ]
-        if self.coord_frame == "differential":
-            orientation_euler = self.orientation.as_euler('xyz')[2]
-            #dp_gap = np.array([1.5, 1.5]) - self.position
-            #angle_to_gap = np.arctan2(dp_gap[1], dp_gap[0]) - orientation_euler
-            #dp_goal = self.goal_pos - self.position
-            #angle_to_goal = np.arctan2(dp_goal[1], dp_goal[0]) - orientation_euler
-            features += [
-                np.sin(orientation_euler),
-                np.cos(orientation_euler),
-                #np.sin(angle_to_gap),
-                #np.cos(angle_to_gap),
-                #np.sin(angle_to_goal),
-                #np.cos(angle_to_goal),
-            ]
 
         return np.hstack(features), pos_map_status
 
@@ -255,10 +216,6 @@ class SimpleEnv(gym.Env):
             * n_agents
         )  # velocity yaw and forward
 
-        obs_shapes = {
-            "global": 4,
-            "differential": 6
-        }
         self.observation_space = gym.spaces.Dict(
             {
                 # current pose relative to goal (x,y)
@@ -269,7 +226,7 @@ class SimpleEnv(gym.Env):
                         gym.spaces.Dict(
                             {
                                 "obs": gym.spaces.Box(
-                                    -10000, 10000, shape=(obs_shapes[self.cfg["action_coord_frame"]],), dtype=float
+                                    -10000, 10000, shape=(4,), dtype=float
                                 ),
                             }
                         ),
@@ -287,7 +244,6 @@ class SimpleEnv(gym.Env):
             self.robots.append(
                 Turtlebot(
                     i,
-                    self.cfg["action_coord_frame"],
                     self.cfg["max_lateral_speed"],
                     self.cfg["max_angular_speed"],
                     self.map
@@ -417,10 +373,6 @@ class SimpleEnv(gym.Env):
                 robot.goal_pos / self.map.dim * [200, 200],
                 2,
             )
-
-            if self.cfg["action_coord_frame"] == "differential":
-                v = robot.orientation.apply(np.array([0.5, 0, 0]))[:2]
-                pygame.draw.line(self.display, (0,255,0), robot.position/self.map.dim*[200,200], (robot.position + v)/self.map.dim*[200,200], 2)
 
         """
         for y in np.arange(0, 3, 0.1):

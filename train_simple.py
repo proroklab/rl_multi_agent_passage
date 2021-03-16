@@ -58,9 +58,9 @@ def train():
     tune.run(
         MultiPPOTrainer,
         #restore="/home/jb2270/ray_results/PPO/PPO_world_0_2020-04-04_23-01-16c532w9iy/checkpoint_100/checkpoint-100",
-        checkpoint_freq=10,
-        #keep_checkpoints_num=2,
-        #checkpoint_score_attr="episode_reward_mean",
+        checkpoint_freq=1,
+        keep_checkpoints_num=2,
+        checkpoint_score_attr="episode_reward_mean",
         #local_dir="/tmp",
         loggers=DEFAULT_LOGGERS + (WandbLogger,),
         config={
@@ -91,12 +91,11 @@ def train():
             "logger_config": {
                 "wandb": {
                     "project": "rl_dynamic_control",
-                    "group": "turtlebots",
+                    "group": "global",
                     "api_key_file": "./wandb_api_key_file"
                 }
             },
             "env_config": {
-                'action_coord_frame': "differential", # global
                 'world_shape': (3., 3.),
                 'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
                 'max_time_steps': 500,
