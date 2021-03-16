@@ -1,0 +1,3 @@
+[submodule "rllib_multi_agent_demo"]
+	path = rllib_multi_agent_demo
+	url = git@gitlab.developers.cam.ac.uk:cst/prorok-lab/rllib_multi_agent_demo.git

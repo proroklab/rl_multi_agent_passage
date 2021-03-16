@@ -16,8 +16,11 @@ from ray.tune.integration.wandb import WandbLogger
 #from model import Model
 from model_2 import Model as Model2
 from ray.rllib.models import ModelCatalog
-from adversarial_comms.trainers.multiagent_ppo import MultiPPOTrainer
-from adversarial_comms.trainers.hom_multi_action_dist import TorchHomogeneousMultiActionDistribution
+
+from rllib_multi_agent_demo.multi_trainer import MultiPPOTrainer
+from rllib_multi_agent_demo.multi_action_dist import (
+    TorchHomogeneousMultiActionDistribution,
+)
 
 
 def initialize():
