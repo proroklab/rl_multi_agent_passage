@@ -6,126 +6,42 @@ import pygame
 
 from scipy.spatial.transform import Rotation as R
 
-DEFAULT_CFG = {
-    'world_shape': (3., 3.),
-    'agent_formation': [[-0.2, -0.2], [-0.2, 0.2], [0.2, -0.2], [0.2, 0.2]],
-    'max_time_steps': 500,
-    'communication_range': 2.0,
-    'max_lateral_speed': 1.0,
-    'max_angular_speed': 5*np.pi,
-}
 
 X = 1
 Y = 0
 
 
-CYLINDER_POSITIONS = np.array(
-    [[i / 5 + 1.5, 1.5] for i in range(2, 8)]
-    + [[-i / 5 + 1.5, 1.5] for i in range(2, 8)],
-    dtype=np.float32,
-)
-CYLINDER_RADII = np.array([0.05] * (6 * 2))
-MAX_SPEED = 0.5
-
-
-def get_pot_to_reach_goal(position, goal_position):
-    u = 0
-    v = np.zeros((2,), dtype=float)
-    if True:  # position[1] >= 1.5:
-        dp = goal_position - position
-        u = np.linalg.norm(dp, ord=2)
-        v = (dp) / u * MAX_SPEED  # a) d/dx, d/dy 0.1(x^2+y^2)
-    return u, v
-
-
-def get_pot_to_reach_middle(position):
-    u = 0
-    v = np.zeros((2,), dtype=float)
-    if position[1] < 1.5:
-        v = np.array([1.5, 1.5]) - position
-        u = np.linalg.norm(v, ord=2)
-        v = v / u * MAX_SPEED
-    return u, v
-
-
-def get_pot_to_avoid_obstacles(
-    position, obstacle_positions, obstacle_radii, k_ri=1, gamma=2, n_0i=0.3
-):
-    # https://www.dis.uniroma1.it/~oriolo/amr/slides/MotionPlanning3_Slides.pdf
-    u = 0
-    v = np.zeros((2,))
-    for p, r in zip(obstacle_positions, obstacle_radii):
-        dp = position - p  # get vector from point to obstacle position
-        dst_p_pos = np.linalg.norm(dp, ord=2)
-        if dst_p_pos > r:
-            dp /= dst_p_pos  # normalize this vector
-            dp *= r  # multiply with obstacle radius to get point on radius
-            dp_niq = (p + dp) - position  # vector from point to obstacle radius point
-            n_iq = np.linalg.norm(dp_niq, ord=2)
-            if n_iq <= n_0i:
-                u += (k_ri / gamma) * ((1 / n_iq - 1 / n_0i)) ** gamma
-                v -= (
-                    (k_ri / (n_iq ** 2))
-                    * ((1 / n_iq - 1 / n_0i)) ** (gamma - 1)
-                    * (dp_niq / n_iq)
-                )
-        else:
-            u = np.inf
-
-    return u, v
-
-
-def cap(u, max_val):
-    if u > max_val:
-        return max_val
-    return u
-
-
-def cap_v(v, max_speed):
-    n = np.linalg.norm(v)
-    if n > max_speed:
-        return v / n * max_speed
-    return v
-
-
-def get_velocity(pose, goal, mode="all"):
-    u_goal, v_goal = 0, np.zeros((2,))
-    u_avoid, v_avoid = 0, np.zeros((2,))
-    if mode in ("goal", "all"):
-        u_goal, v_goal = get_pot_to_reach_goal(pose, goal)
-
-    if mode in ("obstacle", "all"):
-        u_lin_middle, v_lin_middle = get_pot_to_reach_middle(pose)
-        u_obs, v_obs = get_pot_to_avoid_obstacles(
-            pose, CYLINDER_POSITIONS, CYLINDER_RADII, k_ri=0.2, gamma=2, n_0i=0.5
-        )
-        u_avoid = u_lin_middle + u_obs
-        v_avoid = v_lin_middle + v_obs
-
-    u = u_goal + u_avoid
-    v = v_goal + v_avoid
-    return cap(u, 10), cap_v(v, MAX_SPEED)
-
-
 class WorldMap:
-    def __init__(self, dim, n_agents):
-        self.dim = dim
-        self.map_grid_shape = (200, 200)
+    def __init__(self, dim, n_agents, gap_length, grid_px_per_m, agent_radius):
+        self.dim = np.array(dim)
+        self.px_per_m = grid_px_per_m
+        self.map_grid_shape = (self.dim * self.px_per_m).astype(np.int)
+        self.agent_radius = agent_radius
         self.n_agents = n_agents
         self.map = np.zeros(
             (self.map_grid_shape[Y], self.map_grid_shape[X], 1 + self.n_agents),
             dtype=np.bool,
         )
-        self.map[:85, 98:102, 0] = True
-        self.map[115:, 98:102, 0] = True
+        gap_start = self.pos_to_grid(np.array([-gap_length / 2, 0]))[Y]
+        gap_end = self.pos_to_grid(np.array([gap_length / 2, 0]))[Y]
+        center = self.pos_to_grid(np.array([0, 0]))[X]
+        self.map[:gap_start, center - 2 : center + 2, 0] = True
+        self.map[gap_end:, center - 2 : center + 2, 0] = True
 
         yy, xx = np.mgrid[: self.map_grid_shape[Y], : self.map_grid_shape[X]]
-        self.yy = (yy / self.map_grid_shape[Y]) * dim[Y]
-        self.xx = (xx / self.map_grid_shape[X]) * dim[X]
+        self.yy = (yy / self.map_grid_shape[Y]) * self.dim[Y] - (self.dim / 2)[Y]
+        self.xx = (xx / self.map_grid_shape[X]) * self.dim[X] - (self.dim / 2)[X]
+
+    def pos_to_grid(self, p):
+        return ((np.array(p) + self.dim / 2) / self.dim * self.map_grid_shape).astype(
+            np.int
+        )
 
     def set_robot(self, position, agent_idx):
         rob_map = np.zeros(self.map_grid_shape, dtype=np.bool)
-        sel = ((self.yy - position[Y]) ** 2 + (self.xx - position[X]) ** 2) < 0.1 ** 2
+        sel = (
+            (self.yy - position[Y]) ** 2 + (self.xx - position[X]) ** 2
+        ) < self.agent_radius ** 2
         rob_map[sel] = True
 
         if self.is_colliding_wall(rob_map):
@@ -156,22 +72,18 @@ class WorldMap:
 
 
 class Turtlebot:
-
-    def __init__(self, index, max_lateral_speed, max_angular_speed, world_map):
+    def __init__(self, index, dt, max_lateral_speed, world_map):
         self.index = index
+        self.dt = dt
         self.world_map = world_map
         self.max_lateral_speed = max_lateral_speed
-        self.max_angular_speed = max_angular_speed
 
         self.reset(np.array([0, 0]), 0, np.array([0, 0]))
 
-    def reset(self, start_pos, start_orientation, goal_pos):
-        self.orientation = R.from_euler("z", start_orientation)
+    def reset(self, start_pos, goal_pos):
         self.position = start_pos.copy()
         self.goal_pos = goal_pos.copy()
 
-        self.setpoint_lateral = 0
-        self.setpoint_angular = 0
         self.setpoint_vx = 0
         self.setpoint_vy = 0
         self.reached_goal = False
@@ -179,28 +91,29 @@ class Turtlebot:
 
     def set_velocity(self, velocity):
         assert not np.any(np.isnan(velocity))
-        self.setpoint_vx = np.clip(velocity[1], -self.max_lateral_speed, self.max_lateral_speed)
-        self.setpoint_vy = np.clip(velocity[0], -self.max_lateral_speed, self.max_lateral_speed)
-
-    def get_rotation_matrix(self):
-        return self.orientation.as_matrix()
+        self.setpoint_vx = np.clip(
+            velocity[1], -self.max_lateral_speed, self.max_lateral_speed
+        )
+        self.setpoint_vy = np.clip(
+            velocity[0], -self.max_lateral_speed, self.max_lateral_speed
+        )
 
     def step(self):
-        dt = 0.01
         prev_pos = self.position.copy()
-        new_pos = self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * dt
+        new_pos = (
+            self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * self.dt
+        )
 
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
 
         if pos_map_status == "ok":
-            self.position = np.clip(new_pos, [0, 0], self.world_map.dim)
+            self.position = np.clip(
+                new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
+            )
 
-        self.v_world = (self.position.copy() - prev_pos)/dt
+        self.v_world = (self.position.copy() - prev_pos) / self.dt
 
-        features = [
-            self.position,
-            self.goal_pos - self.position
-        ]
+        features = [self.position, self.goal_pos - self.position]
 
         return np.hstack(features), pos_map_status
 
@@ -214,13 +127,12 @@ class SimpleEnv(gym.Env):
         self.action_space = gym.spaces.Tuple(
             (gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=float),)
             * n_agents
-        )  # velocity yaw and forward
+        )  # velocity world coordinates
 
         self.observation_space = gym.spaces.Dict(
             {
                 # current pose relative to goal (x,y)
-                # current pose relative to origin (and therefore gap in wall) (x, y, phi)
-                # current velocity (lin, ang)
+                # current pose relative to passage (x, y)
                 "agents": gym.spaces.Tuple(
                     (
                         gym.spaces.Dict(
@@ -237,17 +149,18 @@ class SimpleEnv(gym.Env):
             }
         )
 
-        self.map = WorldMap(self.cfg["world_shape"], len(self.cfg["agent_formation"]))
+        self.map = WorldMap(
+            self.cfg["world_shape"],
+            len(self.cfg["agent_formation"]),
+            self.cfg["gap_length"],
+            self.cfg["grid_px_per_m"],
+            self.cfg["agent_radius"],
+        )
 
         self.robots = []
         for i in range(len(self.cfg["agent_formation"])):
             self.robots.append(
-                Turtlebot(
-                    i,
-                    self.cfg["max_lateral_speed"],
-                    self.cfg["max_angular_speed"],
-                    self.map
-                )
+                Turtlebot(i, self.cfg["dt"], self.cfg["max_lateral_speed"], self.map)
             )
 
         self.display = None
@@ -262,13 +175,20 @@ class SimpleEnv(gym.Env):
     def reset(self):
         self.timestep = 0
 
-        theta = self.random_state.uniform(-np.pi / 4, np.pi / 4)
+        theta = self.random_state.uniform(-np.pi, np.pi)
         c, s = np.cos(theta), np.sin(theta)
         R = np.array(((c, -s), (s, c)))
         rotated_formation = np.dot(self.cfg["agent_formation"], R)
 
-        offset_start = self.random_state.uniform([0.5, 0.5], [2.5, 0.8])
-        offset_goal = self.random_state.uniform([0.5, 2], [2.5, 2.5])
+        box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
+        offset_start = self.random_state.uniform(
+            [-box[Y], -box[X]],
+            [box[Y], -self.cfg["placement_keepout_wall"]],
+        )
+        offset_goal = self.random_state.uniform(
+            [-box[Y], self.cfg["placement_keepout_wall"]],
+            [box[Y], box[X]],
+        )
 
         starts = rotated_formation + offset_start
         goals = rotated_formation + offset_goal
@@ -303,15 +223,14 @@ class SimpleEnv(gym.Env):
         world_done = self.timestep > self.cfg["max_time_steps"]
         for i, (robot, action) in enumerate(zip(self.robots, actions)):
             robot.set_velocity(action)
-            
+
             o, pos_map_status = robot.step()
 
-            _, goal_vector = get_velocity(robot.position, robot.goal_pos)
-            #if not robot.reached_gap:
-            #    goal_vector = np.array([1.5, 1.5]) - robot.position
-            #else:
-            #    goal_vector = robot.goal_pos - robot.position
-            world_speed = robot.v_world #np.array([robot.vx, robot.vy])
+            if not robot.reached_gap:
+                goal_vector = np.array([0.0, 0.0]) - robot.position
+            else:
+                goal_vector = robot.goal_pos - robot.position
+            world_speed = robot.v_world
             r = 0
             vw = np.linalg.norm(world_speed)
             if vw > 0:
@@ -319,13 +238,13 @@ class SimpleEnv(gym.Env):
                     np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
                     * vw
                 )
-                #orientation_euler = robot.orientation.as_euler('xyz')[2]
-                #angle_to_goal = np.abs((np.arctan2(goal_vector[1], goal_vector[0]) - orientation_euler+np.pi) % (2 * np.pi) - np.pi)
-                #r -= angle_to_goal/50)
+
+            if (
+                not robot.reached_gap
+                and np.linalg.norm(np.array([0.0, 0.0]) - robot.position, ord=2) < 0.05
+            ):
+                robot.reached_gap = True
             if np.linalg.norm(robot.goal_pos - robot.position, ord=2) < 0.1:
-                #if not robot.reached_gap:
-                #    r = 10
-                #    robot.reached_gap = True
                 if not robot.reached_goal:
                     r = 10
                     robot.reached_goal = True
@@ -338,21 +257,13 @@ class SimpleEnv(gym.Env):
             obs.append({"obs": o})
             infos["rewards"][i] = r
             reward += r
-        #print(obs)
-        # state = []
-        # for r, o in zip(self.robots, obs):
-        #    state.append(np.concatenate([o, np.array(r.position)]))
+
         obs = {
             "agents": tuple(obs),
             "gso": self.compute_gso(),
-            #'state': np.array(state)
         }
-        # if not np.all(np.isfinite(obs['state'])) or not np.all(np.isfinite(obs['gso'])):
-        #     import pdb; pdb.set_trace()
 
-        # print(self.timestep)
         world_done = world_done or all([robot.reached_goal for robot in self.robots])
-        # print("INF", actions, infos, len(self.robots))
         return obs, reward, world_done, infos
 
     def clear_patches(self, ax):
@@ -362,28 +273,72 @@ class SimpleEnv(gym.Env):
     def render(self):
         if self.display is None:
             pygame.init()
-            self.display = pygame.display.set_mode((200, 200))
+            self.display = pygame.display.set_mode(self.map.map_grid_shape)
         surf = pygame.surfarray.make_surface(self.map.render().astype(np.uint8) * 255)
         self.display.blit(surf, (0, 0))
+
         for robot in self.robots:
             pygame.draw.line(
                 self.display,
                 (0, 0, 255),
-                robot.position / self.map.dim * [200, 200],
-                robot.goal_pos / self.map.dim * [200, 200],
+                self.map.pos_to_grid(robot.position),
+                self.map.pos_to_grid(robot.goal_pos),
                 2,
             )
 
         """
-        for y in np.arange(0, 3, 0.1):
-            for x in np.arange(0, 3, 0.1):
+        for y in np.arange(-2, 2, 0.4):
+            for x in np.arange(-3, 3, 0.4):
                 _, goal_vector = get_velocity(np.array([y, x]), self.robots[0].goal_pos)
-                pygame.draw.line(self.display, (0,0,255), np.array([y, x])/self.map.dim*[200,200], (np.array([y, x]) + goal_vector/5)/self.map.dim*[200,200], 2)
+                pygame.draw.line(self.display, (0,0,255), self.map.pos_to_grid(np.array([y, x])), self.map.pos_to_grid(np.array([y, x]) + goal_vector/5), 2)
         """
-
         # for p in CYLINDER_POSITIONS:
         #    pygame.draw.circle(self.display, (0,255,0), p/self.map.dim*[200,200], 5)
         if True:
             self.render_frame_index += 1
             pygame.image.save(self.display, f"./img/{self.render_frame_index}.png")
         pygame.display.update()
+
+
+if __name__ == "__main__":
+    env = SimpleEnv(
+        {
+            "world_shape": (4.0, 6.0),
+            "dt": 0.05,
+            #'agent_formation': [[-0.5, -0.5], [-0.5, 0.5], [0.5, -0.5], [0.5, 0.5]],
+            "agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
+            "max_time_steps": 500,
+            "communication_range": 2.0,
+            "placement_keepout_wall": 1.5,
+            "placement_keepout_border": 1.0,
+            "gap_length": 1.0,
+            "grid_px_per_m": 40,
+            "agent_radius": 0.3,
+            "render": False,
+            "max_lateral_speed": 2.0,
+        }
+    )
+    import time
+
+    env.reset()
+    ret = 0
+    while True:
+        env.render()
+        a = np.ones((len(env.cfg["agent_formation"]), 2)) * 0.2
+        # env.step(a)
+        time.sleep(1)
+        env.reset()
+        continue
+
+        a = np.ones((len(env.cfg["agent_formation"]), 2))
+        # if env.ts > 100:
+        #   a[0][0] = -1.0
+        # print(env.ts, a)
+        obs, r, done, info = env.step(a)
+        ret += r
+        print(ret)
+        # print(obs["gso"])
+        env.render()
+        # time.sleep(0.1)
+        if done:
+            break
