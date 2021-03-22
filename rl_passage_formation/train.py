@@ -10,15 +10,18 @@ from ray.tune.logger import pretty_print, DEFAULT_LOGGERS, TBXLogger
 from ray.tune.integration.wandb import WandbLogger
 
 from model import Model
+from model_2 import Model as Model2
 from ray.rllib.models import ModelCatalog
 from adversarial_comms.trainers.multiagent_ppo import MultiPPOTrainer
 from adversarial_comms.trainers.hom_multi_action_dist import TorchHomogeneousMultiActionDistribution
 
 if __name__ == '__main__':
+    #ray.init(local_mode=True)
     ray.init()
 
     register_env("pybullet", lambda config: SimEnv(config))
     ModelCatalog.register_custom_model("model", Model)
+    ModelCatalog.register_custom_model("model2", Model2)
     ModelCatalog.register_custom_action_dist("hom_multi_action", TorchHomogeneousMultiActionDistribution)
 
     num_workers = 16
@@ -47,7 +50,7 @@ if __name__ == '__main__':
             "batch_mode": "complete_episodes", # complete_episodes, truncate_episodes
             "observation_filter": "NoFilter",
             "model": {
-                "custom_model": "model",
+                "custom_model": "model2",
                 "custom_action_dist": "hom_multi_action",
                 "custom_model_config": {
                     "graph_tabs": 2,
@@ -86,13 +89,13 @@ if __name__ == '__main__':
                     #[-0.3, 1.1, 0],
                     #[0.3, 1.1, 0],
                     #[0.0, 0.8, 0],
-                    #[-0.3, 0.8, 0],
-                    #[0.3, 0.8, 0],
-                    [0.0, 0.5, 0],
                     [0.3, 0.5, 0],
                     [-0.3, 0.5, 0],
+                    #[0.3, 0.8, 0],
+                    #[-0.3, 0.8, 0],
+                    [0.0, 0.5, 0],
                 ],
-                'max_time_steps': 3000,
+                'max_time_steps': 10000,
                 'communication_range': 2.0,
                 'render': False,
             }})
