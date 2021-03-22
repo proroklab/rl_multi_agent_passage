@@ -78,7 +78,7 @@ class Turtlebot:
         self.world_map = world_map
         self.max_lateral_speed = max_lateral_speed
 
-        self.reset(np.array([0, 0]), 0, np.array([0, 0]))
+        self.reset(np.array([0, 0]), np.array([0, 0]))
 
     def reset(self, start_pos, goal_pos):
         self.position = start_pos.copy()
@@ -195,7 +195,7 @@ class SimpleEnv(gym.Env):
 
         for robot, start, goal in zip(self.robots, starts, goals):
             start_rot = self.random_state.uniform(-np.pi, np.pi)
-            robot.reset(start, start_rot, goal)
+            robot.reset(start, goal)
         return self.step([[0, 0]] * len(self.robots))[0]
 
     def compute_gso(self):
