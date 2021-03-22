@@ -27,6 +27,14 @@ class Turtlebot():
         self.lidar_lines = [-1]*16
         self.lidar_base = np.array([-0.03, 0, 0.18])
 
+        nearPlane = 0.01
+        farPlane = 100
+        fov = 60
+        self.pixelWidth = 30
+        self.pixelHeight = 20
+        aspect = self.pixelWidth / self.pixelHeight
+        self.projectionMatrix = p.computeProjectionMatrixFOV(fov, aspect, nearPlane, farPlane)
+
         self.reset()	
 
     def reset(self):
@@ -37,7 +45,7 @@ class Turtlebot():
         self.update_state()
         self.setpoint_forward_speed = 0
         self.setpoint_yaw_rate = 0
-        self.reached_middle = False
+        self.reached_goal = False
 
     def update_state(self):
         self.last_lateral_speed = self.lateral_speed.copy()
@@ -67,6 +75,26 @@ class Turtlebot():
         self.setpoint_forward_speed = np.clip(lateral, *self.CONFIG['limits']['forward_speed'])
         self.setpoint_yaw_rate = np.clip(angular, *self.CONFIG['limits']['yaw_rate'])
 
+    def get_camera(self):
+        com_p, com_o, _, _, _, _ = p.getLinkState(self.body_id, 7)
+        rot_matrix = p.getMatrixFromQuaternion(com_o)
+        rot_matrix = np.array(rot_matrix).reshape(3, 3)
+        # Initial vectors
+        init_camera_vector = (1, 0, 0) # z-axis
+        init_up_vector = (0, 0, 1) # y-axis
+        # Rotated vectors
+        camera_vector = rot_matrix.dot(init_camera_vector)
+        up_vector = rot_matrix.dot(init_up_vector)
+        viewMatrix = p.computeViewMatrix(com_p, com_p + camera_vector, up_vector)
+        return p.getCameraImage(self.pixelWidth,
+                                  self.pixelHeight,
+                                  viewMatrix,
+                                  self.projectionMatrix,
+                                  shadow=1,
+                                  lightDirection=[1, 1, 1],
+                                  renderer=p.ER_BULLET_HARDWARE_OPENGL,
+                                  physicsClientId=self.pybullet_client)
+                                      
     def step(self):
         self.update_state()
 
@@ -75,12 +103,14 @@ class Turtlebot():
         v_l = self.setpoint_forward_speed / wheel_radius - ((self.setpoint_yaw_rate * wheel_distance) / (2 * wheel_radius));
         v_r = self.setpoint_forward_speed / wheel_radius + ((self.setpoint_yaw_rate * wheel_distance) / (2 * wheel_radius));
 
-        p.setJointMotorControl2(self.body_id, 1, p.VELOCITY_CONTROL, targetVelocity=v_r, force=1000, physicsClientId=self.pybullet_client)
-        p.setJointMotorControl2(self.body_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_l, force=1000, physicsClientId=self.pybullet_client)
+        p.setJointMotorControl2(self.body_id, 2, p.VELOCITY_CONTROL, targetVelocity=v_r, force=1000, physicsClientId=self.pybullet_client)
+        p.setJointMotorControl2(self.body_id, 3, p.VELOCITY_CONTROL, targetVelocity=v_l, force=1000, physicsClientId=self.pybullet_client)
 
         m = self.get_rotation_matrix()
         goal_relative = (self.goal_pos - self.position) @ m
-        gap_relative = (np.array([0, 0, 0]) - self.position) @ m
+        gap_relative_l = (np.array([0, -0.2, 0]) - self.position) @ m
+        gap_relative_r = (np.array([0, 0.2, 0]) - self.position) @ m
+
 
         cfg_lidar = self.CONFIG['lidar']
         rays_range = cfg_lidar['rays_end'] - cfg_lidar['rays_start']
@@ -96,17 +126,22 @@ class Turtlebot():
         )
         self.lidar_rays = [v[2] for v in lidar_rays]
 
+
         obs = np.hstack([
-            self.lateral_speed,
-            self.ang_speed,
+            self.world_lateral_speed,
+            self.world_ang_speed,
             #self.last_lateral_speed,
             #self.last_ang_speed,
-            #np.sin(self.orientation_euler),
-            #np.cos(self.orientation_euler),
-            #gap_relative,
-            goal_relative,
-            self.lidar_rays
-        ])
+            np.sin(self.orientation_euler),
+            np.cos(self.orientation_euler),
+            self.position,
+            #gap_relative_l,
+            #gap_relative_r,
+            #goal_relative,
+            self.goal_pos,
+            #self.goal_pos,
+            #self.lidar_rays
+        ])#, self.get_camera()
 
         return obs
 
@@ -133,7 +168,19 @@ class SimEnv(gym.Env):
         self.cfg = config
         n_agents = len(self.cfg['agent_poses'])
         self.action_space = gym.spaces.Tuple(
-            (gym.spaces.Box(low=np.array([-np.pi/8, -0.2]), high=np.array([np.pi/8, 0.2]), shape=(2,), dtype=float),)*n_agents) # velocity yaw and forward
+            (gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=float),)*n_agents) # velocity yaw and forward
+
+        ''''
+        self.action_space = gym.spaces.Tuple(
+            (
+                gym.spaces.Tuple((
+                    #gym.spaces.Box(low=-np.pi/8, high=np.pi/8, shape=(1,), dtype=float),
+                    #gym.spaces.Box(low=-0.2, high=0.2, shape=(1,), dtype=float)
+                    gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=float),
+                    gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=float)
+                ))
+            ,)*n_agents) # velocity yaw and forward
+        '''
 
         self.observation_space = gym.spaces.Dict({
             # current pose relative to goal (x,y)
@@ -141,8 +188,9 @@ class SimEnv(gym.Env):
             # current velocity (lin, ang)
             'agents': gym.spaces.Tuple((
                 gym.spaces.Dict({
-                    "obs": gym.spaces.Box(-10000, 10000, shape=(9+8,), dtype=float),
-                    "state": gym.spaces.Box(low=-10000, high=10000, shape=(9,))
+                    "obs": gym.spaces.Box(-10000, 10000, shape=(18,), dtype=float),
+                    #"img": gym.spaces.Box(0, 1, shape=(20, 30, 2), dtype=int),
+                    "state": gym.spaces.Box(low=-10000, high=10000, shape=(6,))
                 })
             ,)*n_agents),
             'gso': gym.spaces.Box(-1, 1, shape=(n_agents, n_agents), dtype=float),
@@ -153,7 +201,7 @@ class SimEnv(gym.Env):
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.client)
         p.setAdditionalSearchPath(str(Path(__file__).parent / "data"))
-        self.wall_id = p.loadURDF("wall.urdf", physicsClientId=self.client)
+        self.wall_id = -1 #p.loadURDF("wall.urdf", physicsClientId=self.client)
 
         self.robots = []
         for initial_pose, goal_pose in zip(self.cfg['agent_poses'], self.cfg['agent_goals']):
@@ -196,25 +244,32 @@ class SimEnv(gym.Env):
         for i, (robot, action) in enumerate(zip(self.robots, actions)):
             robot.set_velocity(action[0], action[1])
             observation = robot.step()
-
+            #segmentation = np.array(img_data[4])
+            #segmentation_proc = np.zeros((robot.pixelHeight, robot.pixelWidth, 2), dtype=np.float)
+            #segmentation_proc[..., 0][segmentation == self.wall_id] = 1
+            #for r in self.robots:
+            #    segmentation_proc[..., 1][segmentation == r.body_id] = 1
+            
             goal_vector = robot.goal_pos - robot.position
             reward = np.dot(goal_vector/np.linalg.norm(goal_vector), robot.world_lateral_speed)*np.linalg.norm(robot.world_lateral_speed)
             done = np.sqrt(np.sum(goal_vector**2)) < 0.1
-            if done:
+            if done and not robot.reached_goal:
                 reward = 200
+                robot.reached_goal = True
             collision_idx = set([o[2] for o in p.getContactPoints(bodyA=robot.body_id, physicsClientId=self.client)])
             if self.wall_id in collision_idx:
                 reward -= 0.1
             if any([not (i == self.wall_id) and not (i == self.plane_id) for i in collision_idx]):
-                reward -= 0.01
+                reward -= 1
 
             if not np.all(np.isfinite(observation)) or not np.isfinite(reward):
                 import pdb; pdb.set_trace()
 
             observations.append({
                 "obs": observation,
+                #"img": segmentation_proc,
                 "state": np.hstack([
-                    robot.position,
+                    #robot.position,
                     np.sin(robot.orientation_euler),
                     np.cos(robot.orientation_euler)
                 ])
@@ -227,6 +282,8 @@ class SimEnv(gym.Env):
 
         p.stepSimulation(physicsClientId=self.client)
 
+        #print(img_arr[4])
+        #import pdb; pdb.set_trace()
         all_obs = {
             'agents': tuple(observations),
             'gso': self.compute_gso(),
@@ -234,15 +291,21 @@ class SimEnv(gym.Env):
         #if not np.all(np.isfinite(obs['state'])) or not np.all(np.isfinite(obs['gso'])):
         #     import pdb; pdb.set_trace()
 
-        done = any(dones) or self.timestep > self.cfg['max_time_steps']
+        done = all(dones) or self.timestep > self.cfg['max_time_steps']
         return all_obs, all_reward, done, infos
 
 class CentrSimEnv(gym.Env):
     def __init__(self, config):
         self.cfg = config
         n_agents = len(self.cfg['agent_poses'])
-        self.action_space = gym.spaces.Box(low=np.array([-np.pi/8, -0.2]*n_agents), high=np.array([np.pi/8, 0.2]*n_agents), shape=(2*n_agents,), dtype=float)
-
+        self.action_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2*n_agents,), dtype=float)
+        #self.action_space = gym.spaces.Box(low=np.array([-np.pi/8, -0.2]*n_agents), high=np.array([np.pi/8, 0.2]*n_agents), shape=(2*n_agents,), dtype=float)
+        #self.action_space = gym.spaces.Tuple((
+            #gym.spaces.Box(low=-np.pi/8, high=np.pi/8, shape=(1,), dtype=float),
+            #gym.spaces.Box(low=-0.2, high=0.2, shape=(1,), dtype=float)
+        #    gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=float),
+        #    gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=float)
+        #))
         self.observation_space = gym.spaces.Box(-10000, 10000, shape=((9+8)*n_agents,), dtype=float)
 
         self.client = p.connect(p.GUI if self.cfg['render'] else p.DIRECT)
