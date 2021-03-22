@@ -67,6 +67,31 @@
       <inertia ixx="2.2124416e-03" ixy="-1.2294101e-05" ixz="3.4938785e-05" iyy="2.1193702e-03" iyz="-5.0120904e-06" izz="2.0064271e-03"/>
     </inertial>
   </link>
+  <joint name="battery_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_battery"/>
+    <origin rpy="0 0 0" xyz="0.0 0 0.02"/>
+  </joint>
+  <link name="base_battery">
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.04 0 0.0"/>
+      <geometry>
+        <box size="0.12 0.03 0.02"/>
+      </geometry>
+      <material name="dark"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="-0.04 0 0.0"/>
+      <geometry>
+        <box size="0.12 0.03 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.13"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+    </inertial>
+  </link>
   <joint name="wheel_left_joint" type="continuous">
     <parent link="base_link"/>
     <child link="wheel_left_link"/>
@@ -170,6 +195,18 @@
     </collision>
     <inertial>
       <mass value="0.114"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_cam"/>
+    <origin rpy="0 0 0" xyz="0.01 0.0 0.11"/>
+  </joint>
+  <link name="base_cam">
+    <inertial>
+      <mass value="0.01"/>
       <origin xyz="0 0 0"/>
       <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
     </inertial>
