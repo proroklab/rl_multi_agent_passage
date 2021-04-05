@@ -175,10 +175,15 @@ class SimpleEnv(gym.Env):
     def reset(self):
         self.timestep = 0
 
-        theta = self.random_state.uniform(-np.pi, np.pi)
-        c, s = np.cos(theta), np.sin(theta)
-        R = np.array(((c, -s), (s, c)))
-        rotated_formation = np.dot(self.cfg["agent_formation"], R)
+        def generate_rotated_formation(theta):
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array(((c, -s), (s, c)))
+            return np.dot(self.cfg["agent_formation"], R)
+
+        theta_start = self.random_state.uniform(-np.pi, np.pi)
+        rotated_formation_start = generate_rotated_formation(theta_start)
+        theta_end = self.random_state.uniform(-np.pi, np.pi)
+        rotated_formation_end = generate_rotated_formation(theta_end)
 
         box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
         offset_start = self.random_state.uniform(
@@ -190,11 +195,10 @@ class SimpleEnv(gym.Env):
             [box[Y], box[X]],
         )
 
-        starts = rotated_formation + offset_start
-        goals = rotated_formation + offset_goal
+        starts = rotated_formation_start + offset_start
+        goals = rotated_formation_end + offset_goal
 
         for robot, start, goal in zip(self.robots, starts, goals):
-            start_rot = self.random_state.uniform(-np.pi, np.pi)
             robot.reset(start, goal)
         return self.step([[0, 0]] * len(self.robots))[0]
 
