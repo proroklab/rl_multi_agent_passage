@@ -14,23 +14,28 @@ Y = 0
 class WorldMap:
     def __init__(self, dim, n_agents, gap_length, grid_px_per_m, agent_radius):
         self.dim = np.array(dim)
+        self.gap_length = gap_length
         self.px_per_m = grid_px_per_m
         self.map_grid_shape = (self.dim * self.px_per_m).astype(np.int)
         self.agent_radius = agent_radius
         self.n_agents = n_agents
-        self.map = np.zeros(
-            (self.map_grid_shape[Y], self.map_grid_shape[X], 1 + self.n_agents),
-            dtype=np.bool,
-        )
-        gap_start = self.pos_to_grid(np.array([-gap_length / 2, 0]))[Y]
-        gap_end = self.pos_to_grid(np.array([gap_length / 2, 0]))[Y]
-        center = self.pos_to_grid(np.array([0, 0]))[X]
-        self.map[:gap_start, center - 2 : center + 2, 0] = True
-        self.map[gap_end:, center - 2 : center + 2, 0] = True
 
         yy, xx = np.mgrid[: self.map_grid_shape[Y], : self.map_grid_shape[X]]
         self.yy = (yy / self.map_grid_shape[Y]) * self.dim[Y] - (self.dim / 2)[Y]
         self.xx = (xx / self.map_grid_shape[X]) * self.dim[X] - (self.dim / 2)[X]
+
+        self.reset()
+
+    def reset(self):
+        self.map = np.zeros(
+            (self.map_grid_shape[Y], self.map_grid_shape[X], 1 + self.n_agents),
+            dtype=np.bool,
+        )
+        gap_start = self.pos_to_grid(np.array([-self.gap_length / 2, 0]))[Y]
+        gap_end = self.pos_to_grid(np.array([self.gap_length / 2, 0]))[Y]
+        center = self.pos_to_grid(np.array([0, 0]))[X]
+        self.map[:gap_start, center - 2 : center + 2, 0] = True
+        self.map[gap_end:, center - 2 : center + 2, 0] = True
 
     def pos_to_grid(self, p):
         return ((np.array(p) + self.dim / 2) / self.dim * self.map_grid_shape).astype(
@@ -105,7 +110,7 @@ class Turtlebot:
         )
 
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
-
+        print(self.index, pos_map_status)
         if pos_map_status == "ok":
             self.position = np.clip(
                 new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
@@ -123,7 +128,7 @@ class SimpleEnv(gym.Env):
         self.seed(0)
 
         self.cfg = config
-        n_agents = len(self.cfg["agent_formation"])
+        n_agents = self.cfg["n_agents"]
         self.action_space = gym.spaces.Tuple(
             (gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=float),)
             * n_agents
@@ -151,14 +156,14 @@ class SimpleEnv(gym.Env):
 
         self.map = WorldMap(
             self.cfg["world_shape"],
-            len(self.cfg["agent_formation"]),
+            self.cfg["n_agents"],
             self.cfg["gap_length"],
             self.cfg["grid_px_per_m"],
             self.cfg["agent_radius"],
         )
 
         self.robots = []
-        for i in range(len(self.cfg["agent_formation"])):
+        for i in range(self.cfg["n_agents"]):
             self.robots.append(
                 Turtlebot(i, self.cfg["dt"], self.cfg["max_lateral_speed"], self.map)
             )
@@ -180,26 +185,48 @@ class SimpleEnv(gym.Env):
             R = np.array(((c, -s), (s, c)))
             return np.dot(self.cfg["agent_formation"], R)
 
-        theta_start = self.random_state.uniform(-np.pi, np.pi)
-        rotated_formation_start = generate_rotated_formation(theta_start)
-        theta_end = self.random_state.uniform(-np.pi, np.pi)
-        rotated_formation_end = generate_rotated_formation(theta_end)
+        #theta_start = self.random_state.uniform(-np.pi, np.pi)
+        #rotated_formation_start = generate_rotated_formation(theta_start)
+        #theta_end = self.random_state.uniform(-np.pi, np.pi)
+        #rotated_formation_end = generate_rotated_formation(theta_end)
 
-        box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
-        offset_start = self.random_state.uniform(
-            [-box[Y], -box[X]],
-            [box[Y], -self.cfg["placement_keepout_wall"]],
-        )
-        offset_goal = self.random_state.uniform(
-            [-box[Y], self.cfg["placement_keepout_wall"]],
-            [box[Y], box[X]],
-        )
+        def generate_start():
+            box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
+            return self.random_state.uniform(
+                [-box[Y], -box[X]],
+                [box[Y], -self.cfg["placement_keepout_wall"]],
+            )
 
-        starts = rotated_formation_start + offset_start
-        goals = rotated_formation_end + offset_goal
+        def generate_goal():
+            box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
+            return self.random_state.uniform(
+                [-box[Y], self.cfg["placement_keepout_wall"]],
+                [box[Y], box[X]],
+            )
+
+        self.map.reset()
+
+        def place_agent(agent_id, positions, gen_fn):
+            if agent_id == len(self.robots):
+                return True
+            for i in range(10):
+                p = gen_fn()
+                if self.map.set_robot(p, agent_id) == "ok" and place_agent(agent_id + 1, positions, gen_fn):
+                    positions.append(p)
+                    return True
+            return False
+
+        goals = []
+        place_agent(0, goals, generate_goal)
+
+        self.map.reset()
+        starts = []
+        place_agent(0, starts, generate_start)
 
         for robot, start, goal in zip(self.robots, starts, goals):
             robot.reset(start, goal)
+
+        self.map.reset()
         return self.step([[0, 0]] * len(self.robots))[0]
 
     def compute_gso(self):
@@ -310,11 +337,12 @@ if __name__ == "__main__":
             "world_shape": (4.0, 6.0),
             "dt": 0.05,
             #'agent_formation': [[-0.5, -0.5], [-0.5, 0.5], [0.5, -0.5], [0.5, 0.5]],
-            "agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
+            #"agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
+            "n_agents": 5,
             "max_time_steps": 500,
             "communication_range": 2.0,
-            "placement_keepout_wall": 1.5,
-            "placement_keepout_border": 1.0,
+            "placement_keepout_wall": 0.4,
+            "placement_keepout_border": 0.4,
             "gap_length": 1.0,
             "grid_px_per_m": 40,
             "agent_radius": 0.3,
@@ -328,13 +356,13 @@ if __name__ == "__main__":
     ret = 0
     while True:
         env.render()
-        a = np.ones((len(env.cfg["agent_formation"]), 2)) * 0.2
+        a = np.ones((env.cfg["n_agents"], 2)) * 0.2
         # env.step(a)
-        time.sleep(1)
-        env.reset()
-        continue
+        #time.sleep(1)
+        #env.reset()
+        #continue
 
-        a = np.ones((len(env.cfg["agent_formation"]), 2))
+        a = np.ones((env.cfg["n_agents"], 2))
         # if env.ts > 100:
         #   a[0][0] = -1.0
         # print(env.ts, a)
