@@ -12,9 +12,10 @@ Y = 0
 
 
 class WorldMap:
-    def __init__(self, dim, n_agents, gap_length, grid_px_per_m, agent_radius):
+    def __init__(self, dim, n_agents, wall_width, gap_length, grid_px_per_m, agent_radius):
         self.dim = np.array(dim)
         self.gap_length = gap_length
+        self.wall_width = wall_width
         self.px_per_m = grid_px_per_m
         self.map_grid_shape = (self.dim * self.px_per_m).astype(np.int)
         self.agent_radius = agent_radius
@@ -34,8 +35,9 @@ class WorldMap:
         gap_start = self.pos_to_grid(np.array([-self.gap_length / 2, 0]))[Y]
         gap_end = self.pos_to_grid(np.array([self.gap_length / 2, 0]))[Y]
         center = self.pos_to_grid(np.array([0, 0]))[X]
-        self.map[:gap_start, center - 2 : center + 2, 0] = True
-        self.map[gap_end:, center - 2 : center + 2, 0] = True
+        wall_width_px_half = max(1, int((self.wall_width * self.px_per_m) / 2))
+        self.map[:gap_start, center - wall_width_px_half : center + wall_width_px_half, 0] = True
+        self.map[gap_end:, center - wall_width_px_half : center + wall_width_px_half, 0] = True
 
     def pos_to_grid(self, p):
         return ((np.array(p) + self.dim / 2) / self.dim * self.map_grid_shape).astype(
@@ -91,8 +93,7 @@ class Turtlebot:
 
         self.setpoint_vx = 0
         self.setpoint_vy = 0
-        self.reached_goal = False
-        self.reached_gap = False
+        self.passage_state = "before" # before, in, after, reached_goal
 
     def set_velocity(self, velocity):
         assert not np.any(np.isnan(velocity))
@@ -110,7 +111,6 @@ class Turtlebot:
         )
 
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
-        print(self.index, pos_map_status)
         if pos_map_status == "ok":
             self.position = np.clip(
                 new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
@@ -157,6 +157,7 @@ class SimpleEnv(gym.Env):
         self.map = WorldMap(
             self.cfg["world_shape"],
             self.cfg["n_agents"],
+            self.cfg["wall_width"],
             self.cfg["gap_length"],
             self.cfg["grid_px_per_m"],
             self.cfg["agent_radius"],
@@ -190,17 +191,17 @@ class SimpleEnv(gym.Env):
         #theta_end = self.random_state.uniform(-np.pi, np.pi)
         #rotated_formation_end = generate_rotated_formation(theta_end)
 
+        keepout_wall = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"] + 0.1
+        box = self.map.dim / 2
         def generate_start():
-            box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
             return self.random_state.uniform(
                 [-box[Y], -box[X]],
-                [box[Y], -self.cfg["placement_keepout_wall"]],
+                [box[Y], -keepout_wall],
             )
 
         def generate_goal():
-            box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
             return self.random_state.uniform(
-                [-box[Y], self.cfg["placement_keepout_wall"]],
+                [-box[Y], keepout_wall],
                 [box[Y], box[X]],
             )
 
@@ -257,32 +258,30 @@ class SimpleEnv(gym.Env):
 
             o, pos_map_status = robot.step()
 
-            if not robot.reached_gap:
-                goal_vector = np.array([0.0, 0.0]) - robot.position
-            else:
+            wall_robot_offset = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"]
+            if robot.passage_state == "before":
+                goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
+                if np.linalg.norm(goal_vector) < 0.05:
+                    robot.passage_state = "in"
+            elif robot.passage_state == "in":
+                goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
+                if np.linalg.norm(goal_vector) < 0.05:
+                    robot.passage_state = "after"
+            elif robot.passage_state == "after":
                 goal_vector = robot.goal_pos - robot.position
+                if np.linalg.norm(goal_vector) < 0.05:
+                    robot.passage_state = "reached_goal"
+
             world_speed = robot.v_world
             r = 0
             vw = np.linalg.norm(world_speed)
-            if vw > 0:
+            if vw > 0 and not robot.passage_state == "reached_goal":
                 r = (
                     np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
                     * vw
                 )
 
-            if (
-                not robot.reached_gap
-                and np.linalg.norm(np.array([0.0, 0.0]) - robot.position, ord=2) < 0.05
-            ):
-                robot.reached_gap = True
-            if np.linalg.norm(robot.goal_pos - robot.position, ord=2) < 0.1:
-                if not robot.reached_goal:
-                    r = 10
-                    robot.reached_goal = True
-                else:
-                    r = 0
-
-            if pos_map_status == "agent":
+            if pos_map_status == "agent" or pos_map_status == "wall":
                 r -= 1
 
             obs.append({"obs": o})
@@ -294,7 +293,7 @@ class SimpleEnv(gym.Env):
             "gso": self.compute_gso(),
         }
 
-        world_done = world_done or all([robot.reached_goal for robot in self.robots])
+        world_done = world_done or all([robot.passage_state == "reached_goal" for robot in self.robots])
         return obs, reward, world_done, infos
 
     def clear_patches(self, ax):
@@ -335,14 +334,13 @@ if __name__ == "__main__":
     env = SimpleEnv(
         {
             "world_shape": (4.0, 6.0),
+            "wall_width": 0.5,
             "dt": 0.05,
             #'agent_formation': [[-0.5, -0.5], [-0.5, 0.5], [0.5, -0.5], [0.5, 0.5]],
             #"agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
-            "n_agents": 5,
+            "n_agents": 1,
             "max_time_steps": 500,
             "communication_range": 2.0,
-            "placement_keepout_wall": 0.4,
-            "placement_keepout_border": 0.4,
             "gap_length": 1.0,
             "grid_px_per_m": 40,
             "agent_radius": 0.3,
@@ -363,6 +361,17 @@ if __name__ == "__main__":
         #continue
 
         a = np.ones((env.cfg["n_agents"], 2))
+
+        wall_robot_offset = env.cfg["wall_width"] / 2 + env.cfg["agent_radius"]
+        for i, robot in enumerate(env.robots):
+            if robot.passage_state == "before":
+                goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
+            elif robot.passage_state == "in":
+                goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
+            elif robot.passage_state == "after":
+                goal_vector = robot.goal_pos - robot.position
+            a[i] = [goal_vector[1], goal_vector[0]]
+
         # if env.ts > 100:
         #   a[0][0] = -1.0
         # print(env.ts, a)
@@ -373,4 +382,5 @@ if __name__ == "__main__":
         env.render()
         # time.sleep(0.1)
         if done:
-            break
+            #break
+            env.reset()
