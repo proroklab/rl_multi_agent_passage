@@ -261,15 +261,15 @@ class SimpleEnv(gym.Env):
             wall_robot_offset = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"]
             if robot.passage_state == "before":
                 goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
-                if np.linalg.norm(goal_vector) < 0.05:
+                if np.linalg.norm(goal_vector) < 0.1:
                     robot.passage_state = "in"
             elif robot.passage_state == "in":
                 goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
-                if np.linalg.norm(goal_vector) < 0.05:
+                if np.linalg.norm(goal_vector) < 0.1:
                     robot.passage_state = "after"
             elif robot.passage_state == "after":
                 goal_vector = robot.goal_pos - robot.position
-                if np.linalg.norm(goal_vector) < 0.05:
+                if np.linalg.norm(goal_vector) < 0.1:
                     robot.passage_state = "reached_goal"
 
             world_speed = robot.v_world
