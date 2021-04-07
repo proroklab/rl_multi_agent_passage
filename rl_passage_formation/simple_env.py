@@ -303,11 +303,13 @@ class SimpleEnv(gym.Env):
     def render(self):
         if self.display is None:
             pygame.init()
+            pygame.font.init()
+            self.font = pygame.font.SysFont('Arial', 30)
             self.display = pygame.display.set_mode(self.map.map_grid_shape)
         surf = pygame.surfarray.make_surface(self.map.render().astype(np.uint8) * 255)
         self.display.blit(surf, (0, 0))
 
-        for robot in self.robots:
+        for i, robot in enumerate(self.robots):
             pygame.draw.line(
                 self.display,
                 (0, 0, 255),
@@ -315,6 +317,8 @@ class SimpleEnv(gym.Env):
                 self.map.pos_to_grid(robot.goal_pos),
                 2,
             )
+            robot_label = self.font.render(f'{i}', False, (0, 0, 255))
+            self.display.blit(robot_label, self.map.pos_to_grid(robot.position))
 
         """
         for y in np.arange(-2, 2, 0.4):
