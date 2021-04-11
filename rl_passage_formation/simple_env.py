@@ -178,7 +178,7 @@ class SimpleEnv(gym.Env):
         self.random_state, seed = seeding.np_random(seed)
         return [seed]
 
-    def reset(self):
+    def reset_random(self):
         self.timestep = 0
 
         def generate_rotated_formation(theta):
@@ -230,6 +230,43 @@ class SimpleEnv(gym.Env):
         self.map.reset()
         return self.step([[0, 0]] * len(self.robots))[0]
 
+    def reset_formation(self):
+        self.timestep = 0
+
+        def generate_rotated_formation(theta):
+            c, s = np.cos(theta), np.sin(theta)
+            R = np.array(((c, -s), (s, c)))
+            return np.dot(self.cfg["agent_formation"], R)
+
+        theta_start = self.random_state.uniform(-np.pi, np.pi)
+        rotated_formation_start = generate_rotated_formation(theta_start)
+        theta_end = self.random_state.uniform(-np.pi, np.pi)
+        rotated_formation_end = generate_rotated_formation(theta_end)
+
+        box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
+        offset_start = self.random_state.uniform(
+            [-box[Y], -box[X]],
+            [box[Y], -self.cfg["placement_keepout_wall"]],
+        )
+        offset_goal = self.random_state.uniform(
+            [-box[Y], self.cfg["placement_keepout_wall"]],
+            [box[Y], box[X]],
+        )
+
+        starts = rotated_formation_start + offset_start
+        goals = rotated_formation_end + offset_goal
+
+        for robot, start, goal in zip(self.robots, starts, goals):
+            robot.reset(start, goal)
+        return self.step([[0, 0]] * len(self.robots))[0]
+
+    def reset(self):
+        if "agent_formation" in self.cfg:
+            assert len(self.cfg["agent_formation"]) == self.cfg["n_agents"]
+            return self.reset_formation()
+        else:
+            return self.reset_random()
+
     def compute_gso(self):
         dists = np.zeros((len(self.robots), len(self.robots)))
         for agent_y in range(len(self.robots)):
@@ -263,26 +300,30 @@ class SimpleEnv(gym.Env):
                 goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
                 if np.linalg.norm(goal_vector) < 0.1:
                     robot.passage_state = "in"
-            elif robot.passage_state == "in":
+            if robot.passage_state == "in":
                 goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
                 if np.linalg.norm(goal_vector) < 0.1:
                     robot.passage_state = "after"
-            elif robot.passage_state == "after":
+            if robot.passage_state == "after" or robot.passage_state == "reached_goal":
                 goal_vector = robot.goal_pos - robot.position
-                if np.linalg.norm(goal_vector) < 0.1:
-                    robot.passage_state = "reached_goal"
 
             world_speed = robot.v_world
             r = 0
             vw = np.linalg.norm(world_speed)
-            if vw > 0 and not robot.passage_state == "reached_goal":
+            if vw > 0:
                 r = (
                     np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
                     * vw
                 )
 
-            if pos_map_status == "agent" or pos_map_status == "wall":
-                r -= 1
+            if robot.passage_state == "after" and np.linalg.norm(goal_vector) < 0.1:
+                robot.passage_state = "reached_goal"
+                r += 10
+
+            if pos_map_status == "agent": # or pos_map_status == "wall":
+                r -= 1.5
+            if pos_map_status == "wall": # or pos_map_status == "":
+                r -= 0.25
 
             obs.append({"obs": o})
             infos["rewards"][i] = r
@@ -293,7 +334,8 @@ class SimpleEnv(gym.Env):
             "gso": self.compute_gso(),
         }
 
-        world_done = world_done or all([robot.passage_state == "reached_goal" for robot in self.robots])
+        #world_done = world_done or all([np.linalg.norm(r.goal_pos - robot.position) < 0.1 for r in self.robots])
+        world_done = world_done or all([r.passage_state == "reached_goal" for r in self.robots])
         return obs, reward, world_done, infos
 
     def clear_patches(self, ax):
@@ -303,7 +345,6 @@ class SimpleEnv(gym.Env):
     def render(self):
         if self.display is None:
             pygame.init()
-            pygame.font.init()
             self.font = pygame.font.SysFont('Arial', 30)
             self.display = pygame.display.set_mode(self.map.map_grid_shape)
         surf = pygame.surfarray.make_surface(self.map.render().astype(np.uint8) * 255)
@@ -317,7 +358,7 @@ class SimpleEnv(gym.Env):
                 self.map.pos_to_grid(robot.goal_pos),
                 2,
             )
-            robot_label = self.font.render(f'{i}', False, (0, 0, 255))
+            robot_label = self.font.render(f'{i} {robot.passage_state}', False, (0, 0, 255))
             self.display.blit(robot_label, self.map.pos_to_grid(robot.position))
 
         """
