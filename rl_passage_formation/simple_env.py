@@ -79,11 +79,12 @@ class WorldMap:
 
 
 class Turtlebot:
-    def __init__(self, index, dt, max_lateral_speed, world_map):
+    def __init__(self, index, dt, max_v, max_a, world_map):
         self.index = index
         self.dt = dt
         self.world_map = world_map
-        self.max_lateral_speed = max_lateral_speed
+        self.max_v = max_v
+        self.max_a = max_a
 
         self.reset(np.array([0, 0]), np.array([0, 0]))
 
@@ -91,32 +92,28 @@ class Turtlebot:
         self.position = start_pos.copy()
         self.goal_pos = goal_pos.copy()
 
-        self.setpoint_vx = 0
-        self.setpoint_vy = 0
+        self.desired_v = np.array([0, 0])
+        self.true_v = np.array([0, 0])
         self.passage_state = "before" # before, in, after, reached_goal
 
     def set_velocity(self, velocity):
         assert not np.any(np.isnan(velocity))
-        self.setpoint_vx = np.clip(
-            velocity[1], -self.max_lateral_speed, self.max_lateral_speed
-        )
-        self.setpoint_vy = np.clip(
-            velocity[0], -self.max_lateral_speed, self.max_lateral_speed
-        )
+        self.desired_v = np.clip(np.array([velocity[1], velocity[0]]), -self.max_v, self.max_v)
 
     def step(self):
-        prev_pos = self.position.copy()
-        new_pos = (
-            self.position + np.array([self.setpoint_vx, self.setpoint_vy]) * self.dt
-        )
+        desired_a = (self.desired_v - self.true_v) / self.dt
+        possible_a = np.clip(desired_a, -self.max_a, self.max_a)
+        possible_v = self.true_v + possible_a * self.dt
 
+        prev_pos = self.position.copy()
+        new_pos = self.position + possible_v * self.dt
         pos_map_status = self.world_map.set_robot(new_pos, self.index)
         if pos_map_status == "ok":
             self.position = np.clip(
                 new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
             )
 
-        self.v_world = (self.position.copy() - prev_pos) / self.dt
+        self.true_v = (self.position - prev_pos) / self.dt
 
         features = [self.position, self.goal_pos - self.position]
 
@@ -166,7 +163,7 @@ class SimpleEnv(gym.Env):
         self.robots = []
         for i in range(self.cfg["n_agents"]):
             self.robots.append(
-                Turtlebot(i, self.cfg["dt"], self.cfg["max_lateral_speed"], self.map)
+                Turtlebot(i, self.cfg["dt"], self.cfg["max_v"], self.cfg["max_a"], self.map)
             )
 
         self.display = None
@@ -307,7 +304,7 @@ class SimpleEnv(gym.Env):
             if robot.passage_state == "after" or robot.passage_state == "reached_goal":
                 goal_vector = robot.goal_pos - robot.position
 
-            world_speed = robot.v_world
+            world_speed = robot.true_v
             r = 0
             vw = np.linalg.norm(world_speed)
             if vw > 0:
@@ -369,7 +366,7 @@ class SimpleEnv(gym.Env):
         """
         # for p in CYLINDER_POSITIONS:
         #    pygame.draw.circle(self.display, (0,255,0), p/self.map.dim*[200,200], 5)
-        if True:
+        if False:
             self.render_frame_index += 1
             pygame.image.save(self.display, f"./img/{self.render_frame_index}.png")
         pygame.display.update()
@@ -390,7 +387,8 @@ if __name__ == "__main__":
             "grid_px_per_m": 40,
             "agent_radius": 0.3,
             "render": False,
-            "max_lateral_speed": 2.0,
+            "max_v": 3.0,
+            "max_a": 1.2,
         }
     )
     import time
