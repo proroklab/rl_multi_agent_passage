@@ -272,7 +272,8 @@ class SimpleEnv(gym.Env):
             return self.reset_random()
 
     def compute_gso(self):
-        dists = np.zeros((len(self.robots), len(self.robots)))
+        adj_shape = (len(self.robots), len(self.robots))
+        dists = np.zeros(adj_shape)
         for agent_y in range(len(self.robots)):
             for agent_x in range(len(self.robots)):
                 dst = np.sum(
@@ -284,8 +285,11 @@ class SimpleEnv(gym.Env):
                 dists[agent_y, agent_x] = dst
                 dists[agent_x, agent_y] = dst
 
-        A = dists < (self.cfg["communication_range"] ** 2)
+        A = (dists < (self.cfg["communication_range"] ** 2)).astype(np.int)
         np.fill_diagonal(A, 0)
+        if "adjacency_dropout" in self.cfg:
+            dropout = (np.random.uniform(size=adj_shape) >= self.cfg["adjacency_dropout"]).astype(np.int)
+            A *= dropout
         return A.astype(np.float)
 
     def step(self, actions):
