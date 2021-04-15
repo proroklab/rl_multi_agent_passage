@@ -97,6 +97,9 @@ class Turtlebot:
         self.true_a = np.array([0, 0])
         self.passage_state = "before" # before, in, after, reached_goal
 
+    def set_max_a(self, max_a):
+        self.max_a = max_a
+
     def set_velocity(self, velocity):
         assert not np.any(np.isnan(velocity))
         self.desired_v = np.clip(np.array([velocity[1], velocity[0]]), -self.max_v, self.max_v)

@@ -12,10 +12,12 @@ from ray.tune.registry import register_env
 
 from ray.tune.logger import pretty_print, DEFAULT_LOGGERS, TBXLogger
 from ray.tune.integration.wandb import WandbLogger
+from ray.rllib.agents.callbacks import DefaultCallbacks
 
 # from model import Model
 from model_2 import Model as Model2
 from model_3 import Model as Model3
+from model_3_modgnn import Model as Model3ModGNN
 from ray.rllib.models import ModelCatalog
 
 from rllib_multi_agent_demo.multi_trainer import MultiPPOTrainer
@@ -32,6 +34,7 @@ def initialize():
     # ModelCatalog.register_custom_model("model", Model)
     ModelCatalog.register_custom_model("model2", Model2)
     ModelCatalog.register_custom_model("model3", Model3)
+    ModelCatalog.register_custom_model("model3modgnn", Model3ModGNN)
     ModelCatalog.register_custom_action_dist(
         "hom_multi_action", TorchHomogeneousMultiActionDistribution
     )
@@ -57,6 +60,19 @@ def continue_experiment(checkpoint_path):
         loggers=DEFAULT_LOGGERS + (WandbLogger,),
         #local_dir="/tmp"
     )
+
+class MyCallbacks(DefaultCallbacks):
+    current_max_a = 10.
+
+    def on_train_result(self, *, trainer, result, **kwargs):
+        if result["episode_len_mean"] < 350:
+            self.current_max_a = max(self.current_max_a - 0.5, 1.2)
+
+        trainer.workers.foreach_worker(
+            lambda ev: ev.foreach_env(
+                lambda env: [r.set_max_a(self.current_max_a) for r in env.robots]))
+
+        result["max_a"] = self.current_max_a
 
 
 def train():
@@ -87,7 +103,7 @@ def train():
             "batch_mode": "complete_episodes",  # complete_episodes, truncate_episodes
             "observation_filter": "NoFilter",
             "model": {
-                "custom_model": "model3",
+                "custom_model": "model3modgnn",
                 "custom_action_dist": "hom_multi_action",
                 "custom_model_config": {
                     "graph_tabs": 2,
@@ -106,9 +122,9 @@ def train():
                 "dt": 0.05,
                 #'agent_formation': [[-0.5, -0.5], [-0.5, 0.5], [0.5, -0.5], [0.5, 0.5]],
                 #"agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
-                "agent_formation": [[-0.8, -0.8], [-0.8, 0.8], [0.6, 0.0]],
-                "n_agents": 3,
-                #"agent_formation": (np.array([[-1, -1], [-1, 1], [0, 0], [1, -1], [1, 1]]) * 0.6).tolist(),
+                #"agent_formation": [[-0.8, -0.8], [-0.8, 0.8], [0.6, 0.0]],
+                "n_agents": 5,
+                "agent_formation": (np.array([[-1, -1], [-1, 1], [0, 0], [1, -1], [1, 1]]) * 0.6).tolist(),
                 "placement_keepout_border": 1.0,
                 "placement_keepout_wall": 1.5,
                 #"agent_formation": (
@@ -125,8 +141,10 @@ def train():
                 "grid_px_per_m": 40,
                 "agent_radius": 0.3,
                 "render": False,
-                "max_lateral_speed": 2.0,
+                "max_v": 3.0,
+                "max_a": 10,
             },
+            "callbacks": MyCallbacks,
         },
     )
 
