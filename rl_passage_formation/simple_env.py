@@ -94,6 +94,7 @@ class Turtlebot:
 
         self.desired_v = np.array([0, 0])
         self.true_v = np.array([0, 0])
+        self.true_a = np.array([0, 0])
         self.passage_state = "before" # before, in, after, reached_goal
 
     def set_velocity(self, velocity):
@@ -112,6 +113,9 @@ class Turtlebot:
             self.position = np.clip(
                 new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
             )
+            self.true_a = possible_a
+        else:
+            self.true_a = np.array([0, 0])
 
         self.true_v = (self.position - prev_pos) / self.dt
 
