@@ -151,6 +151,10 @@ class Model(TorchModelV2, nn.Module):
             ],
         )
 
+        # for decentralized execution
+        self.gnn_nodes = [copy.deepcopy(self.gnn.network[0]) for _ in range(self.n_agents)]
+        self.transmitted = {}
+
         # nn.init.xavier_uniform_(self.gnn.network[-1].ffinal.weight)
         # nn.init.constant_(self.gnn.network[-1].ffinal.bias, 0)
 
@@ -166,6 +170,59 @@ class Model(TorchModelV2, nn.Module):
         # nn.init.constant_(self.gnn.network[-1].ffinal.bias, 0)
 
         # summary(self.value_output, device="cpu", input_size=(logits_inp_features,))
+
+
+    def step_decentralised(self, tx, A, X):
+        # A: N x N
+        # X: N x Dobs
+        output = []
+        # Process observations and send message # TODO: switch order
+        for i, node in enumerate(self.gnn_nodes):
+            node.input(X[i, :])
+            out = node.compute()
+            output.append(out)
+        output = torch.stack(output, dim=0)  # output: N x Dout
+        # Send message
+        tx["skip_count"] += 1
+        if len(tx["msgs"]) == 0 or tx["skip_count"] == self.cfg["eval_decentr_comm_skip"]:
+            msgs = []
+            tx["skip_count"] = 0
+            for i, node in enumerate(self.gnn_nodes):
+                sent_data = node.send()
+                msgs.append(sent_data)
+            tx["msgs"] = torch.stack(msgs, dim=0)
+        # Receive messages
+        for i, node in enumerate(self.gnn_nodes):
+            if node.y is None:
+                continue
+            N, K, Dinput = tx["msgs"].shape
+            incoming = list(tx["msgs"].view(N, K * Dinput)[A[i, :].bool(), :].view(-1, K, Dinput))
+            node.receive(incoming)
+        return output
+
+    def eval_decentralised(self, A, X):
+        # A: batch x K+1 x N x N
+        # X: batch x K+1 x N x Dobs
+        self.gnn_nodes = [copy.deepcopy(self.gnn.network[0]) for _ in range(self.n_agents)]
+
+        batch, K, N, Dobs = X.shape
+        K -= 1
+        output = []
+        for sample in range(batch):
+            out = None
+            for k in range(K + 1):
+                if k not in self.transmitted:
+                    self.transmitted[k] = {
+                        "msgs": [],
+                        "skip_count": 0
+                    }
+                Ak = A[sample, K - k, :, :]
+                Xk = X[sample, K - k, :, :]
+                out = self.step_decentralised(self.transmitted[k], Ak, Xk)
+            output.append(out)
+        output = torch.stack(output, dim=0)
+        [node.clear() for node in self.gnn_nodes]
+        return output
 
     @override(ModelV2)
     def forward(self, input_dict, state, seq_lens):
@@ -187,8 +244,11 @@ class Model(TorchModelV2, nn.Module):
             for j in range(t_dim):
                 features[:, j, i, :] = input_dict["obs"]["agents"][i]["obs"]
 
-        outputs = self.gnn(gso, features)
-        # import pdb; pdb.set_trace()
+        if batch_size == 1 and "eval_decentr_comm_skip" in self.cfg:
+            outputs = self.eval_decentralised(gso, features)
+            #assert torch.all((outputs_decentr - outputs_centr).abs() < 10e-5)
+        else:
+            outputs = self.gnn(gso, features)
 
         if self.cfg["forward_values"]:
             values = self.gnn_value(gso, features)
