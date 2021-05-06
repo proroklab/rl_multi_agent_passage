@@ -18,7 +18,6 @@ import numpy as np
 import copy
 
 torch, nn = try_import_torch()
-from torchsummary import summary
 
 # https://ray.readthedocs.io/en/latest/using-ray-with-pytorch.html
 
