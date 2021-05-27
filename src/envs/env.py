@@ -28,6 +28,12 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GRAY = (100, 100, 100)
 
+STATE_INITIAL = 0  # moving towards the passage
+STATE_PASSAGE = 1  # inside the passage
+STATE_AFTER = 2  # moving towards the goal
+STATE_REACHED_GOAL = 3  # goal reached
+STATE_FINISHED = 4  # goal reached and reward bonus given
+
 
 class PassageEnv(VectorEnv):
     def __init__(self, config):
@@ -172,9 +178,13 @@ class PassageEnv(VectorEnv):
         # measured velocities
         self.measured_vs = self.create_state_tensor()
         # current state to determine next waypoint for reward (0 initial, 1 for in passage, 2 after)
-        self.passage_states = torch.zeros(
-            self.cfg["num_envs"], self.cfg["n_agents"]
-        ).to(self.device)
+        self.states = torch.zeros(self.cfg["num_envs"], self.cfg["n_agents"]).to(
+            self.device
+        )
+        # save goal vectors only for visualization
+        self.rew_vecs = torch.zeros(self.cfg["num_envs"], self.cfg["n_agents"], 2).to(
+            self.device
+        )
         return [self.get_obs(index) for index in range(self.cfg["num_envs"])]
 
     def reset_at(self, index: Optional[int] = None) -> EnvObsType:
@@ -188,7 +198,8 @@ class PassageEnv(VectorEnv):
         self.ps[index] = start[0]
         self.goal_ps[index] = goal[0]
         self.measured_vs[index] = torch.zeros(self.cfg["n_agents"], 2)
-        self.passage_states[index] = torch.zeros(self.cfg["n_agents"])
+        self.states[index] = torch.zeros(self.cfg["n_agents"])
+        self.rew_vecs[index] = torch.zeros(self.cfg["n_agents"], 2)
         return self.get_obs(index)
 
     def get_obs(self, index: int) -> EnvObsType:
@@ -211,6 +222,7 @@ class PassageEnv(VectorEnv):
             infos (List[any]): Info values for each sub-env.
         """
         assert len(actions) == self.cfg["num_envs"]
+        # Step the agents while considering vel and acc constraints
         desired_vs = torch.clip(
             torch.Tensor(actions).to(self.device), -self.cfg["max_v"], self.cfg["max_v"]
         )
@@ -222,11 +234,13 @@ class PassageEnv(VectorEnv):
         previous_ps = self.ps.clone().to(self.device)
         next_ps = self.ps + possible_vs * self.cfg["dt"]
 
+        # check if next position collisides with other agents or wall
         agents_ds, obstacle_ds = self.compute_dists(next_ps)
-        agents_no_coll = torch.min(agents_ds, dim=2)[0] > 2 * self.cfg["agent_radius"]
-        obstacles_no_coll = torch.min(obstacle_ds, dim=2)[0] > self.cfg["agent_radius"]
-        no_coll = torch.logical_and(agents_no_coll, obstacles_no_coll)
+        agents_coll = torch.min(agents_ds, dim=2)[0] <= 2 * self.cfg["agent_radius"]
+        obstacles_coll = torch.min(obstacle_ds, dim=2)[0] <= self.cfg["agent_radius"]
 
+        # only update pos if there are no collisions
+        no_coll = ~agents_coll & ~obstacles_coll
         self.ps[no_coll] = next_ps[no_coll]
         self.ps += self.sample_pos_noise()
         dim = torch.Tensor(self.cfg["world_dim"]) / 2
@@ -235,11 +249,45 @@ class PassageEnv(VectorEnv):
 
         self.measured_vs = (self.ps - previous_ps) / self.cfg["dt"]
 
+        # update passage states
+        st_first = self.states == STATE_INITIAL
+        st_second = self.states == STATE_PASSAGE
+        st_third = self.states >= STATE_AFTER
+        wall_robot_offset = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"]
+        self.rew_vecs[st_first] = (
+            torch.Tensor([0.0, -wall_robot_offset]) - self.ps[st_first]
+        )
+        self.rew_vecs[st_second] = (
+            torch.Tensor([0.0, wall_robot_offset]) - self.ps[st_second]
+        )
+        self.rew_vecs[st_third] = self.goal_ps[self.states >= 2] - self.ps[st_third]
+        rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2)
+        # move to next state
+        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.1)] += 1
+
+        # reward: dense shaped reward following waypoints
+        vs_norm = torch.linalg.norm(self.measured_vs, dim=2)
+        rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2).unsqueeze(2)
+        rewards = (
+            torch.bmm(
+                (self.rew_vecs / rew_vecs_norm).view(-1, 2).unsqueeze(1),
+                (self.measured_vs / vs_norm.unsqueeze(2)).view(-1, 2).unsqueeze(2),
+            ).view(self.cfg["num_envs"], self.cfg["n_agents"])
+            * vs_norm
+        )
+        rewards[vs_norm == 0.0] = 0.0
+
+        # bonus when reaching the goal
+        rewards[self.states == STATE_REACHED_GOAL] += 10.0
+
+        # penalty when colliding
+        rewards[agents_coll] -= 1.5
+        rewards[obstacles_coll] -= 0.25
+
         obs = [self.get_obs(index) for index in range(self.cfg["num_envs"])]
-        rewards = [0.0 for index in range(self.cfg["num_envs"])]
-        dones = [False for index in range(self.cfg["num_envs"])]
+        dones = (self.states >= 2).all(1).tolist()
         infos = [{} for index in range(self.cfg["num_envs"])]
-        return obs, rewards, dones, infos
+        return obs, torch.sum(rewards, dim=1).tolist(), dones, infos
 
     def get_unwrapped(self) -> List[EnvType]:
         return []
@@ -259,7 +307,8 @@ class PassageGymEnv(PassageEnv, gym.Env):
     def step(self, actions):
         vector_actions = self.create_state_tensor()
         vector_actions[0] = actions
-        self.vector_step(vector_actions)
+        obs, r, done, info = self.vector_step(vector_actions)
+        return obs[0], r[0], done[0], info[0]
 
     def render(self, mode="rgb_array"):
         AGENT_COLOR = BLUE
@@ -278,19 +327,30 @@ class PassageGymEnv(PassageEnv, gym.Env):
         img = pygame.Surface(self.display.get_size(), pygame.SRCALPHA)
 
         for agent_index in range(self.cfg["n_agents"]):
+            agent_p = self.ps[index, agent_index]
             pygame.draw.circle(
                 img,
                 AGENT_COLOR,
-                point_to_screen(self.ps[index, agent_index]),
+                point_to_screen(agent_p),
                 self.cfg["agent_radius"] * self.cfg["render_px_per_m"],
             )
             pygame.draw.line(
                 img,
                 AGENT_COLOR,
-                point_to_screen(self.ps[index, agent_index]),
+                point_to_screen(agent_p),
                 point_to_screen(self.goal_ps[index, agent_index]),
                 4,
             )
+            rew_vec = self.rew_vecs[index, agent_index]
+            rew_vec_norm = torch.linalg.norm(rew_vec)
+            if rew_vec_norm > 0.0:
+                pygame.draw.line(
+                    img,
+                    RED,
+                    point_to_screen(agent_p),
+                    point_to_screen(agent_p + rew_vec / rew_vec_norm * 0.5),
+                    2,
+                )
 
         for o in self.obstacles:
             tl = point_to_screen([o["max"][X], o["min"][Y]])
@@ -346,6 +406,7 @@ if __name__ == "__main__":
     env.vector_reset()
     # env.reset()
     selected_agent = 0
+    rew = 0
     while True:
 
         a = torch.zeros((env.cfg["n_agents"], 2))
@@ -366,12 +427,10 @@ if __name__ == "__main__":
         # env.ps[0, 0, X] = 1.0
         env.render(mode="human")
 
-        env.step(a)
-
-        # env.reset()
-        # time.sleep(1)
-        """
         obs, r, done, info = env.step(a)
+        rew += r
+        print(rew)
+        """
         for key, agent_reward in info["rewards"].items():
             returns[key] += agent_reward
         print(returns)
