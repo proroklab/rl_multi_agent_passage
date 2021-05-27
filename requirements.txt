@@ -1,0 +1,4 @@
+pygame
+wandb
+gym==0.17.3
+
