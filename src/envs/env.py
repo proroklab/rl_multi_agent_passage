@@ -177,12 +177,15 @@ class PassageEnv(VectorEnv):
         self.goal_ps = goals
         # measured velocities
         self.measured_vs = self.create_state_tensor()
-        # current state to determine next waypoint for reward (0 initial, 1 for in passage, 2 after)
+        # current state to determine next waypoint for reward
         self.states = torch.zeros(self.cfg["num_envs"], self.cfg["n_agents"]).to(
             self.device
         )
         # save goal vectors only for visualization
         self.rew_vecs = torch.zeros(self.cfg["num_envs"], self.cfg["n_agents"], 2).to(
+            self.device
+        )
+        self.timesteps = torch.zeros(self.cfg["num_envs"], dtype=torch.int).to(
             self.device
         )
         return [self.get_obs(index) for index in range(self.cfg["num_envs"])]
@@ -200,6 +203,7 @@ class PassageEnv(VectorEnv):
         self.measured_vs[index] = torch.zeros(self.cfg["n_agents"], 2)
         self.states[index] = torch.zeros(self.cfg["n_agents"])
         self.rew_vecs[index] = torch.zeros(self.cfg["n_agents"], 2)
+        self.timesteps[index] = 0
         return self.get_obs(index)
 
     def get_obs(self, index: int) -> EnvObsType:
@@ -221,6 +225,8 @@ class PassageEnv(VectorEnv):
             dones (List[any]): Done values for each sub-env.
             infos (List[any]): Info values for each sub-env.
         """
+        self.timesteps += 1
+
         assert len(actions) == self.cfg["num_envs"]
         # Step the agents while considering vel and acc constraints
         desired_vs = torch.clip(
@@ -285,8 +291,13 @@ class PassageEnv(VectorEnv):
         rewards[obstacles_coll] -= 0.25
 
         obs = [self.get_obs(index) for index in range(self.cfg["num_envs"])]
-        dones = (self.states >= 2).all(1).tolist()
-        infos = [{} for index in range(self.cfg["num_envs"])]
+        all_reached_goal = (self.states == STATE_FINISHED).all(1)
+        timeout = self.timesteps >= self.cfg["max_time_steps"]
+        dones = (all_reached_goal | timeout).tolist()
+        infos = [
+            {"rewards": {k: r for k, r in enumerate(env_rew)}}
+            for env_rew in rewards.tolist()
+        ]
         return obs, torch.sum(rewards, dim=1).tolist(), dones, infos
 
     def get_unwrapped(self) -> List[EnvType]:
@@ -388,7 +399,7 @@ if __name__ == "__main__":
             "placement_keepout_border": 1.0,
             "placement_keepout_wall": 1.5,
             "pos_noise_std": 0.0,
-            "max_time_steps": 500,
+            "max_time_steps": 10000,
             "communication_range": 2.0,
             "wall_width": 0.3,
             "gap_length": 1.0,
@@ -405,6 +416,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
     env.vector_reset()
     # env.reset()
+    returns = torch.zeros((env.cfg["n_agents"]))
     selected_agent = 0
     rew = 0
     while True:
@@ -429,12 +441,9 @@ if __name__ == "__main__":
 
         obs, r, done, info = env.step(a)
         rew += r
-        print(rew)
-        """
         for key, agent_reward in info["rewards"].items():
             returns[key] += agent_reward
         print(returns)
         if done:
             env.reset()
             returns = torch.zeros((env.cfg["n_agents"]))
-        """
