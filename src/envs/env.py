@@ -60,9 +60,18 @@ class PassageEnv(VectorEnv):
         self.device = torch.device(self.cfg["device"])
         self.vec_p_shape = (self.cfg["num_envs"], self.cfg["n_agents"], 2)
 
-        self.ps = self.create_state_tensor()
-        self.goal_ps = self.create_state_tensor()
-        self.measured_vs = self.create_state_tensor()
+        self.vector_reset()
+
+        self.obstacles = [
+            {
+                "min": [self.cfg["gap_length"] / 2, -self.cfg["wall_width"] / 2],
+                "max": [self.cfg["world_dim"][X] / 2, self.cfg["wall_width"] / 2],
+            },
+            {
+                "min": [-self.cfg["world_dim"][X] / 2, -self.cfg["wall_width"] / 2],
+                "max": [-self.cfg["gap_length"] / 2, self.cfg["wall_width"] / 2],
+            },
+        ]
 
         pygame.init()
         size = (
@@ -83,12 +92,41 @@ class PassageEnv(VectorEnv):
         else:
             return self.create_state_tensor()
 
-    def check_collisions(self, ps):
-        d_agents = torch.cdist(ps, ps)
-        diags = torch.eye(ps.shape[1]).unsqueeze(0).repeat(len(d_agents), 1, 1).bool()
-        d_agents[diags] = float("inf")
-        min_d = torch.min(d_agents, dim=2)[0]
-        return min_d > 2 * self.cfg["agent_radius"]
+    def compute_dists(self, ps):
+        agents_ds = torch.cdist(ps, ps)
+        diags = (
+            torch.eye(self.cfg["n_agents"]).unsqueeze(0).repeat(len(ps), 1, 1).bool()
+        )
+        agents_ds[diags] = float("inf")
+
+        obstacles_ds = torch.stack(
+            [
+                # https://stackoverflow.com/questions/5254838/calculating-distance-between-a-point-and-a-rectangular-box-nearest-point
+                torch.linalg.norm(
+                    torch.stack(
+                        [
+                            torch.max(
+                                torch.stack(
+                                    [
+                                        torch.zeros(len(ps), self.cfg["n_agents"]),
+                                        o["min"][d] - ps[:, :, d],
+                                        ps[:, :, d] - o["max"][d],
+                                    ],
+                                    dim=2,
+                                ),
+                                dim=2,
+                            )[0]
+                            for d in [X, Y]
+                        ],
+                        dim=2,
+                    ),
+                    dim=2,
+                )
+                for o in self.obstacles
+            ],
+            dim=2,
+        )
+        return agents_ds, obstacles_ds
 
     def rand(self, size, a: float, b: float):
         return (a - b) * torch.rand(size).to(self.device) + b
@@ -127,9 +165,16 @@ class PassageEnv(VectorEnv):
             obs (List[any]): List of observations from each environment.
         """
         starts, goals = self.get_starts_and_goals(self.cfg["num_envs"])
+        # positions
         self.ps = starts
+        # goal positions
         self.goal_ps = goals
+        # measured velocities
         self.measured_vs = self.create_state_tensor()
+        # current state to determine next waypoint for reward (0 initial, 1 for in passage, 2 after)
+        self.passage_states = torch.zeros(
+            self.cfg["num_envs"], self.cfg["n_agents"]
+        ).to(self.device)
         return [self.get_obs(index) for index in range(self.cfg["num_envs"])]
 
     def reset_at(self, index: Optional[int] = None) -> EnvObsType:
@@ -143,6 +188,7 @@ class PassageEnv(VectorEnv):
         self.ps[index] = start[0]
         self.goal_ps[index] = goal[0]
         self.measured_vs[index] = torch.zeros(self.cfg["n_agents"], 2)
+        self.passage_states[index] = torch.zeros(self.cfg["n_agents"])
         return self.get_obs(index)
 
     def get_obs(self, index: int) -> EnvObsType:
@@ -175,7 +221,12 @@ class PassageEnv(VectorEnv):
 
         previous_ps = self.ps.clone().to(self.device)
         next_ps = self.ps + possible_vs * self.cfg["dt"]
-        no_coll = self.check_collisions(next_ps)
+
+        agents_ds, obstacle_ds = self.compute_dists(next_ps)
+        agents_no_coll = torch.min(agents_ds, dim=2)[0] > 2 * self.cfg["agent_radius"]
+        obstacles_no_coll = torch.min(obstacle_ds, dim=2)[0] > self.cfg["agent_radius"]
+        no_coll = torch.logical_and(agents_no_coll, obstacles_no_coll)
+
         self.ps[no_coll] = next_ps[no_coll]
         self.ps += self.sample_pos_noise()
         dim = torch.Tensor(self.cfg["world_dim"]) / 2
@@ -217,17 +268,11 @@ class PassageGymEnv(PassageEnv, gym.Env):
 
         index = 0
 
-        world_dim_2 = torch.Tensor(self.cfg["world_dim"]) / 2
-
-        def point_to_screen(p):
-            return (
-                (
-                    (torch.Tensor([-p[X], p[Y]]) + world_dim_2)
-                    * self.cfg["render_px_per_m"]
-                )
-                .type(torch.int)
-                .tolist()
-            )
+        def point_to_screen(point):
+            return [
+                int((p * f + world_dim / 2) * self.cfg["render_px_per_m"])
+                for p, f, world_dim in zip(point, [-1, 1], self.cfg["world_dim"])
+            ]
 
         self.display.fill(BACKGROUND_COLOR)
         img = pygame.Surface(self.display.get_size(), pygame.SRCALPHA)
@@ -247,22 +292,13 @@ class PassageGymEnv(PassageEnv, gym.Env):
                 4,
             )
 
-        left_wall_tl = point_to_screen([world_dim_2[X], -(self.cfg["wall_width"] / 2)])
-        left_wall_br = point_to_screen(
-            [self.cfg["gap_length"] / 2, self.cfg["wall_width"] / 2]
-        )
-        left_wall_size = (
-            torch.Tensor(left_wall_br) - torch.Tensor(left_wall_tl)
-        ).tolist()
-        pygame.draw.rect(img, WALL_COLOR, left_wall_tl + left_wall_size)
-        right_wall_tl = point_to_screen(
-            [-(self.cfg["gap_length"] / 2), -self.cfg["wall_width"] / 2]
-        )
-        right_wall_br = point_to_screen([-world_dim_2[X], self.cfg["wall_width"] / 2])
-        right_wall_size = (
-            torch.Tensor(right_wall_br) - torch.Tensor(right_wall_tl)
-        ).tolist()
-        pygame.draw.rect(img, WALL_COLOR, right_wall_tl + right_wall_size)
+        for o in self.obstacles:
+            tl = point_to_screen([o["max"][X], o["min"][Y]])
+            width = [
+                int((o["max"][d] - o["min"][d]) * self.cfg["render_px_per_m"])
+                for d in [X, Y]
+            ]
+            pygame.draw.rect(img, WALL_COLOR, tl + width)
         self.display.blit(img, (0, 0))
 
         if mode == "human":
