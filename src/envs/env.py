@@ -317,7 +317,7 @@ class PassageGymEnv(PassageEnv, gym.Env):
 
     def step(self, actions):
         vector_actions = self.create_state_tensor()
-        vector_actions[0] = actions
+        vector_actions[0] = torch.Tensor(actions)
         obs, r, done, info = self.vector_step(vector_actions)
         return obs[0], r[0], done[0], info[0]
 
@@ -375,7 +375,7 @@ class PassageGymEnv(PassageEnv, gym.Env):
         if mode == "human":
             pygame.display.update()
         elif mode == "rgb_array":
-            return pygame.surfarray.array3d(self.display).type(torch.uint8)
+            return pygame.surfarray.array3d(self.display)
 
     def try_render_at(self, index: Optional[int] = None) -> None:
         """Renders a single environment.
