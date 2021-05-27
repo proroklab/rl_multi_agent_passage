@@ -1,440 +1,344 @@
 import time
 import gym
+from ray.rllib.env.vector_env import VectorEnv
+from ray.rllib.utils.typing import (
+    EnvActionType,
+    EnvConfigDict,
+    EnvInfoDict,
+    EnvObsType,
+    EnvType,
+    PartialTrainerConfigDict,
+)
+from typing import Callable, List, Optional, Tuple
+
 from gym.utils import seeding
-import numpy as np
+import torch
+import math
 import pygame
 
 from scipy.spatial.transform import Rotation as R
 
+X = 0
+Y = 1
 
-X = 1
-Y = 0
-
-
-class WorldMap:
-    def __init__(self, dim, n_agents, wall_width, gap_length, grid_px_per_m, agent_radius):
-        self.dim = np.array(dim)
-        self.gap_length = gap_length
-        self.wall_width = wall_width
-        self.px_per_m = grid_px_per_m
-        self.map_grid_shape = (self.dim * self.px_per_m).astype(np.int)
-        self.agent_radius = agent_radius
-        self.n_agents = n_agents
-
-        yy, xx = np.mgrid[: self.map_grid_shape[Y], : self.map_grid_shape[X]]
-        self.yy = (yy / self.map_grid_shape[Y]) * self.dim[Y] - (self.dim / 2)[Y]
-        self.xx = (xx / self.map_grid_shape[X]) * self.dim[X] - (self.dim / 2)[X]
-
-        self.reset()
-
-    def reset(self):
-        self.map = np.zeros(
-            (self.map_grid_shape[Y], self.map_grid_shape[X], 1 + self.n_agents),
-            dtype=np.bool,
-        )
-        gap_start = self.pos_to_grid(np.array([-self.gap_length / 2, 0]))[Y]
-        gap_end = self.pos_to_grid(np.array([self.gap_length / 2, 0]))[Y]
-        center = self.pos_to_grid(np.array([0, 0]))[X]
-        wall_width_px_half = max(1, int((self.wall_width * self.px_per_m) / 2))
-        self.map[:gap_start, center - wall_width_px_half : center + wall_width_px_half, 0] = True
-        self.map[gap_end:, center - wall_width_px_half : center + wall_width_px_half, 0] = True
-
-    def pos_to_grid(self, p):
-        return ((np.array(p) + self.dim / 2) / self.dim * self.map_grid_shape).astype(
-            np.int
-        )
-
-    def set_robot(self, position, agent_idx):
-        rob_map = np.zeros(self.map_grid_shape, dtype=np.bool)
-        sel = (
-            (self.yy - position[Y]) ** 2 + (self.xx - position[X]) ** 2
-        ) < self.agent_radius ** 2
-        rob_map[sel] = True
-
-        if self.is_colliding_wall(rob_map):
-            return "wall"
-
-        if self.is_colliding_other_agent(agent_idx, rob_map):
-            return "agent"
-
-        self.map[:, :, agent_idx + 1] = rob_map
-        return "ok"
-
-    def is_colliding_wall(self, m):
-        return np.any(m & self.map[:, :, 0])
-
-    def is_colliding_other_agent(self, agent_idx, m):
-        for other_agent_idx in range(self.n_agents):
-            if other_agent_idx == agent_idx:
-                continue
-            if np.any(m & self.map[:, :, other_agent_idx + 1]):
-                return True
-        return False
-
-    def render(self):
-        m_acc = np.zeros(self.map_grid_shape, dtype=np.bool)
-        for i in range(self.map.shape[2]):
-            m_acc = m_acc | self.map[:, :, i]
-        return ~m_acc
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (100, 100, 100)
 
 
-class Turtlebot:
-    def __init__(self, index, dt, max_v, max_a, world_map):
-        self.index = index
-        self.dt = dt
-        self.world_map = world_map
-        self.max_v = max_v
-        self.max_a = max_a
-
-        self.reset(np.array([0, 0]), np.array([0, 0]))
-
-    def reset(self, start_pos, goal_pos):
-        self.position = start_pos.copy()
-        self.goal_pos = goal_pos.copy()
-
-        self.desired_v = np.array([0, 0])
-        self.true_v = np.array([0, 0])
-        self.true_a = np.array([0, 0])
-        self.passage_state = "before" # before, in, after, reached_goal
-
-    def set_max_a(self, max_a):
-        self.max_a = max_a
-
-    def set_velocity(self, velocity):
-        assert not np.any(np.isnan(velocity))
-        self.desired_v = np.clip(np.array([velocity[1], velocity[0]]), -self.max_v, self.max_v)
-
-    def step(self):
-        desired_a = (self.desired_v - self.true_v) / self.dt
-        possible_a = np.clip(desired_a, -self.max_a, self.max_a)
-        possible_v = self.true_v + possible_a * self.dt
-
-        prev_pos = self.position.copy()
-        new_pos = self.position + possible_v * self.dt
-        pos_map_status = self.world_map.set_robot(new_pos, self.index)
-        if pos_map_status == "ok":
-            self.position = np.clip(
-                new_pos, -self.world_map.dim / 2, self.world_map.dim / 2
-            )
-            self.true_a = possible_a
-        else:
-            self.true_a = np.array([0, 0])
-
-        self.true_v = (self.position - prev_pos) / self.dt
-
-        features = [self.position, self.goal_pos - self.position]
-
-        return np.hstack(features), pos_map_status
-
-
-class SimpleEnv(gym.Env):
+class PassageEnv(VectorEnv):
     def __init__(self, config):
-        self.seed(0)
-
         self.cfg = config
-        n_agents = self.cfg["n_agents"]
-        self.action_space = gym.spaces.Tuple(
-            (gym.spaces.Box(low=-np.inf, high=np.inf, shape=(2,), dtype=float),)
-            * n_agents
-        )  # velocity world coordinates
-
-        self.observation_space = gym.spaces.Dict(
-            {
-                # current pose relative to goal (x,y)
-                # current pose relative to passage (x, y)
-                "agents": gym.spaces.Tuple(
-                    (
-                        gym.spaces.Dict(
-                            {
-                                "obs": gym.spaces.Box(
-                                    -10000, 10000, shape=(4,), dtype=float
-                                ),
-                            }
-                        ),
-                    )
-                    * n_agents
+        action_space = gym.spaces.Tuple(
+            (
+                gym.spaces.Box(
+                    low=-float("inf"), high=float("inf"), shape=(2,), dtype=float
                 ),
-                "gso": gym.spaces.Box(-1, 1, shape=(n_agents, n_agents), dtype=float),
+            )
+            * self.cfg["n_agents"]
+        )
+
+        observation_space = gym.spaces.Dict(
+            {
+                "pos": gym.spaces.Box(
+                    -6.0, 6.0, shape=(self.cfg["n_agents"], 2), dtype=float
+                ),
+                "vel": gym.spaces.Box(
+                    -100000.0, 100000.0, shape=(self.cfg["n_agents"], 2), dtype=float
+                ),
+                "goal": gym.spaces.Box(
+                    -6.0, 6.0, shape=(self.cfg["n_agents"], 2), dtype=float
+                ),
             }
         )
 
-        self.map = WorldMap(
-            self.cfg["world_shape"],
-            self.cfg["n_agents"],
-            self.cfg["wall_width"],
-            self.cfg["gap_length"],
-            self.cfg["grid_px_per_m"],
-            self.cfg["agent_radius"],
+        super().__init__(observation_space, action_space, self.cfg["num_envs"])
+
+        self.device = torch.device(self.cfg["device"])
+        self.vec_p_shape = (self.cfg["num_envs"], self.cfg["n_agents"], 2)
+
+        self.ps = self.create_state_tensor()
+        self.goal_ps = self.create_state_tensor()
+        self.measured_vs = self.create_state_tensor()
+
+        pygame.init()
+        size = (
+            (torch.Tensor(self.cfg["world_dim"]) * self.cfg["render_px_per_m"])
+            .type(torch.int)
+            .tolist()
         )
+        self.display = pygame.display.set_mode(size)
 
-        self.robots = []
-        for i in range(self.cfg["n_agents"]):
-            self.robots.append(
-                Turtlebot(i, self.cfg["dt"], self.cfg["max_v"], self.cfg["max_a"], self.map)
+    def create_state_tensor(self):
+        return torch.zeros(self.vec_p_shape, dtype=torch.float32).to(self.device)
+
+    def sample_pos_noise(self):
+        if self.cfg["pos_noise_std"] > 0.0:
+            return torch.normal(0.0, self.cfg["pos_noise_std"], self.vec_p_shape).to(
+                self.device
             )
-
-        self.display = None
-        self.render_frame_index = 0
-
-        self.reset()
-
-    def seed(self, seed=None):
-        self.random_state, seed = seeding.np_random(seed)
-        return [seed]
-
-    def reset_random(self):
-        self.timestep = 0
-
-        def generate_rotated_formation(theta):
-            c, s = np.cos(theta), np.sin(theta)
-            R = np.array(((c, -s), (s, c)))
-            return np.dot(self.cfg["agent_formation"], R)
-
-        #theta_start = self.random_state.uniform(-np.pi, np.pi)
-        #rotated_formation_start = generate_rotated_formation(theta_start)
-        #theta_end = self.random_state.uniform(-np.pi, np.pi)
-        #rotated_formation_end = generate_rotated_formation(theta_end)
-
-        keepout_wall = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"] + 0.1
-        box = self.map.dim / 2
-        def generate_start():
-            return self.random_state.uniform(
-                [-box[Y], -box[X]],
-                [box[Y], -keepout_wall],
-            )
-
-        def generate_goal():
-            return self.random_state.uniform(
-                [-box[Y], keepout_wall],
-                [box[Y], box[X]],
-            )
-
-        self.map.reset()
-
-        def place_agent(agent_id, positions, gen_fn):
-            if agent_id == len(self.robots):
-                return True
-            for i in range(10):
-                p = gen_fn()
-                if self.map.set_robot(p, agent_id) == "ok" and place_agent(agent_id + 1, positions, gen_fn):
-                    positions.append(p)
-                    return True
-            return False
-
-        goals = []
-        place_agent(0, goals, generate_goal)
-
-        self.map.reset()
-        starts = []
-        place_agent(0, starts, generate_start)
-
-        for robot, start, goal in zip(self.robots, starts, goals):
-            robot.reset(start, goal)
-
-        self.map.reset()
-        return self.step([[0, 0]] * len(self.robots))[0]
-
-    def reset_formation(self):
-        self.timestep = 0
-
-        def generate_rotated_formation(theta):
-            c, s = np.cos(theta), np.sin(theta)
-            R = np.array(((c, -s), (s, c)))
-            return np.dot(self.cfg["agent_formation"], R)
-
-        theta_start = self.random_state.uniform(-np.pi, np.pi)
-        rotated_formation_start = generate_rotated_formation(theta_start)
-        theta_end = self.random_state.uniform(-np.pi, np.pi)
-        rotated_formation_end = generate_rotated_formation(theta_end)
-
-        box = self.map.dim / 2 - self.cfg["placement_keepout_border"]
-        offset_start = self.random_state.uniform(
-            [-box[Y], -box[X]],
-            [box[Y], -self.cfg["placement_keepout_wall"]],
-        )
-        offset_goal = self.random_state.uniform(
-            [-box[Y], self.cfg["placement_keepout_wall"]],
-            [box[Y], box[X]],
-        )
-
-        starts = rotated_formation_start + offset_start
-        goals = rotated_formation_end + offset_goal
-
-        for robot, start, goal in zip(self.robots, starts, goals):
-            robot.reset(start, goal)
-        return self.step([[0, 0]] * len(self.robots))[0]
-
-    def reset(self):
-        if "agent_formation" in self.cfg:
-            assert len(self.cfg["agent_formation"]) == self.cfg["n_agents"]
-            return self.reset_formation()
         else:
-            return self.reset_random()
+            return self.create_state_tensor()
 
-    def compute_gso(self):
-        adj_shape = (len(self.robots), len(self.robots))
-        dists = np.zeros(adj_shape)
-        for agent_y in range(len(self.robots)):
-            for agent_x in range(len(self.robots)):
-                dst = np.sum(
-                    np.array(
-                        self.robots[agent_x].position - self.robots[agent_y].position
-                    )
-                    ** 2
-                )
-                dists[agent_y, agent_x] = dst
-                dists[agent_x, agent_y] = dst
+    def check_collisions(self, ps):
+        # diff between each agent to each other agent
+        # ps: v x n x 2
+        # calc: v x n x n x 2
+        pass
 
-        A = (dists < (self.cfg["communication_range"] ** 2)).astype(np.int)
-        np.fill_diagonal(A, 0)
-        if "adjacency_dropout" in self.cfg:
-            dropout = (np.random.uniform(size=adj_shape) >= self.cfg["adjacency_dropout"]).astype(np.int)
-            A *= dropout
-        return A.astype(np.float)
+    def rand(self, size, a: float, b: float):
+        return (a - b) * torch.rand(size).to(self.device) + b
 
-    def step(self, actions):
-        self.timestep += 1
-        obs, infos = [], {"rewards": {}}
-        reward = 0
+    def get_starts_and_goals(self, n):
+        def generate_rotated_formation():
+            rot = torch.empty(n, 2, 2).to(self.device)
+            theta = self.rand(n, -math.pi, math.pi)
+            c, s = torch.cos(theta), torch.sin(theta)
+            rot[:, 0, 0] = c
+            rot[:, 0, 1] = -s
+            rot[:, 1, 0] = s
+            rot[:, 1, 1] = c
+            formation = torch.Tensor(self.cfg["agent_formation"]).to(self.device)
+            return torch.bmm(formation.repeat(n, 1, 1), rot)
 
-        world_done = self.timestep > self.cfg["max_time_steps"]
-        for i, (robot, action) in enumerate(zip(self.robots, actions)):
-            robot.set_velocity(action)
+        def rand_n_agents(a, b):
+            return self.rand(n, a, b).unsqueeze(1).repeat(1, self.cfg["n_agents"])
 
-            o, pos_map_status = robot.step()
+        box = (
+            torch.Tensor(self.cfg["world_dim"]) / 2
+            - self.cfg["placement_keepout_border"]
+        )
+        starts = generate_rotated_formation()
 
-            wall_robot_offset = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"]
-            if robot.passage_state == "before":
-                goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
-                if np.linalg.norm(goal_vector) < 0.1:
-                    robot.passage_state = "in"
-            if robot.passage_state == "in":
-                goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
-                if np.linalg.norm(goal_vector) < 0.1:
-                    robot.passage_state = "after"
-            if robot.passage_state == "after" or robot.passage_state == "reached_goal":
-                goal_vector = robot.goal_pos - robot.position
+        starts[:, :, X] += rand_n_agents(-box[X], box[X])
+        starts[:, :, Y] += rand_n_agents(-box[Y], -self.cfg["placement_keepout_wall"])
+        goals = generate_rotated_formation()
+        goals[:, :, X] += rand_n_agents(-box[X], box[X])
+        goals[:, :, Y] += rand_n_agents(self.cfg["placement_keepout_wall"], box[Y])
+        return starts, goals
 
-            world_speed = robot.true_v
-            r = 0
-            vw = np.linalg.norm(world_speed)
-            if vw > 0:
-                r = (
-                    np.dot(goal_vector / np.linalg.norm(goal_vector), world_speed / vw)
-                    * vw
-                )
+    def vector_reset(self) -> List[EnvObsType]:
+        """Resets all sub-environments.
+        Returns:
+            obs (List[any]): List of observations from each environment.
+        """
+        starts, goals = self.get_starts_and_goals(self.cfg["num_envs"])
+        self.ps = starts
+        self.goal_ps = goals
+        self.measured_vs = self.create_state_tensor()
+        return [self.get_obs(index) for index in range(self.cfg["num_envs"])]
 
-            if robot.passage_state == "after" and np.linalg.norm(goal_vector) < 0.1:
-                robot.passage_state = "reached_goal"
-                r += 10
+    def reset_at(self, index: Optional[int] = None) -> EnvObsType:
+        """Resets a single environment.
+        Args:
+            index (Optional[int]): An optional sub-env index to reset.
+        Returns:
+            obs (obj): Observations from the reset sub environment.
+        """
+        start, goal = self.get_starts_and_goals(1)
+        self.ps[index] = start[0]
+        self.goal_ps[index] = goal[0]
+        self.measured_vs[index] = torch.zeros(self.cfg["n_agents"], 2)
+        return self.get_obs(index)
 
-            if pos_map_status == "agent": # or pos_map_status == "wall":
-                r -= 1.5
-            if pos_map_status == "wall": # or pos_map_status == "":
-                r -= 0.25
-
-            obs.append({"obs": o})
-            infos["rewards"][i] = r
-            reward += r
-
-        obs = {
-            "agents": tuple(obs),
-            "gso": self.compute_gso(),
+    def get_obs(self, index: int) -> EnvObsType:
+        return {
+            "pos": self.ps[index].tolist(),
+            "vel": self.measured_vs[index].tolist(),
+            "goal": self.goal_ps[index].tolist(),
         }
 
-        #world_done = world_done or all([np.linalg.norm(r.goal_pos - robot.position) < 0.1 for r in self.robots])
-        world_done = world_done or all([r.passage_state == "reached_goal" for r in self.robots])
-        return obs, reward, world_done, infos
+    def vector_step(
+        self, actions: List[EnvActionType]
+    ) -> Tuple[List[EnvObsType], List[float], List[bool], List[EnvInfoDict]]:
+        """Performs a vectorized step on all sub environments using `actions`.
+        Args:
+            actions (List[any]): List of actions (one for each sub-env).
+        Returns:
+            obs (List[any]): New observations for each sub-env.
+            rewards (List[any]): Reward values for each sub-env.
+            dones (List[any]): Done values for each sub-env.
+            infos (List[any]): Info values for each sub-env.
+        """
+        assert len(actions) == self.cfg["num_envs"]
+        desired_vs = torch.clip(
+            torch.Tensor(actions).to(self.device), -self.cfg["max_v"], self.cfg["max_v"]
+        )
 
-    def clear_patches(self, ax):
-        [p.remove() for p in reversed(ax.patches)]
-        [t.remove() for t in reversed(ax.texts)]
+        desired_as = (desired_vs - self.measured_vs) / self.cfg["dt"]
+        possible_as = torch.clip(desired_as, -self.cfg["max_a"], self.cfg["max_a"])
+        possible_vs = self.measured_vs + possible_as * self.cfg["dt"]
 
-    def render(self):
-        if self.display is None:
-            pygame.init()
-            self.font = pygame.font.SysFont('Arial', 30)
-            self.display = pygame.display.set_mode(self.map.map_grid_shape)
-        surf = pygame.surfarray.make_surface(self.map.render().astype(np.uint8) * 255)
-        self.display.blit(surf, (0, 0))
+        previous_ps = self.ps.clone().to(self.device)
+        next_ps = self.ps + possible_vs * self.cfg["dt"]
+        # pos_map_status = self.world_map.set_robot(new_pos, self.index)
+        if True:  # pos_map_status == "ok":
+            dim = torch.Tensor(self.cfg["world_dim"]) / 2
+            self.ps[:, :, X] = torch.clip(next_ps[:, :, X], -dim[X], dim[X] / 2)
+            self.ps[:, :, Y] = torch.clip(next_ps[:, :, Y], -dim[Y], dim[Y] / 2)
 
-        for i, robot in enumerate(self.robots):
-            pygame.draw.line(
-                self.display,
-                (0, 0, 255),
-                self.map.pos_to_grid(robot.position),
-                self.map.pos_to_grid(robot.goal_pos),
-                2,
+        self.ps += self.sample_pos_noise()
+        self.measured_vs = (self.ps - previous_ps) / self.cfg["dt"]
+
+        obs = [self.get_obs(index) for index in range(self.cfg["num_envs"])]
+        rewards = [0.0 for index in range(self.cfg["num_envs"])]
+        dones = [False for index in range(self.cfg["num_envs"])]
+        infos = [{} for index in range(self.cfg["num_envs"])]
+        return obs, rewards, dones, infos
+
+    def get_unwrapped(self) -> List[EnvType]:
+        return []
+
+
+class PassageGymEnv(PassageEnv, gym.Env):
+    metadata = {
+        "render.modes": ["human", "rgb_array"],
+    }
+
+    def __init__(self, config):
+        super().__init__(config)
+
+    def reset(self):
+        return self.reset_at(0)
+
+    def step(self, actions):
+        vector_actions = self.create_state_tensor()
+        vector_actions[0] = actions
+        self.vector_step(vector_actions)
+
+    def render(self, mode="rgb_array"):
+        AGENT_COLOR = BLUE
+        BACKGROUND_COLOR = WHITE
+        WALL_COLOR = GRAY
+
+        index = 0
+
+        world_dim_2 = torch.Tensor(self.cfg["world_dim"]) / 2
+
+        def point_to_screen(p):
+            return (
+                (
+                    (torch.Tensor([-p[X], p[Y]]) + world_dim_2)
+                    * self.cfg["render_px_per_m"]
+                )
+                .type(torch.int)
+                .tolist()
             )
-            robot_label = self.font.render(f'{i} {robot.passage_state}', False, (0, 0, 255))
-            self.display.blit(robot_label, self.map.pos_to_grid(robot.position))
 
+        self.display.fill(BACKGROUND_COLOR)
+        img = pygame.Surface(self.display.get_size(), pygame.SRCALPHA)
+
+        for agent_index in range(self.cfg["n_agents"]):
+            pygame.draw.circle(
+                img,
+                AGENT_COLOR,
+                point_to_screen(self.ps[index, agent_index]),
+                self.cfg["agent_radius"] * self.cfg["render_px_per_m"],
+            )
+            pygame.draw.line(
+                img,
+                AGENT_COLOR,
+                point_to_screen(self.ps[index, agent_index]),
+                point_to_screen(self.goal_ps[index, agent_index]),
+                4,
+            )
+
+        left_wall_tl = point_to_screen([world_dim_2[X], -(self.cfg["wall_width"] / 2)])
+        left_wall_br = point_to_screen(
+            [self.cfg["gap_length"] / 2, self.cfg["wall_width"] / 2]
+        )
+        left_wall_size = (
+            torch.Tensor(left_wall_br) - torch.Tensor(left_wall_tl)
+        ).tolist()
+        pygame.draw.rect(img, WALL_COLOR, left_wall_tl + left_wall_size)
+        right_wall_tl = point_to_screen(
+            [-(self.cfg["gap_length"] / 2), -self.cfg["wall_width"] / 2]
+        )
+        right_wall_br = point_to_screen([-world_dim_2[X], self.cfg["wall_width"] / 2])
+        right_wall_size = (
+            torch.Tensor(right_wall_br) - torch.Tensor(right_wall_tl)
+        ).tolist()
+        pygame.draw.rect(img, WALL_COLOR, right_wall_tl + right_wall_size)
+        self.display.blit(img, (0, 0))
+
+        if mode == "human":
+            pygame.display.update()
+        elif mode == "rgb_array":
+            return pygame.surfarray.array3d(self.display).type(torch.uint8)
+
+    def try_render_at(self, index: Optional[int] = None) -> None:
+        """Renders a single environment.
+        Args:
+            index (Optional[int]): An optional sub-env index to render.
         """
-        for y in np.arange(-2, 2, 0.4):
-            for x in np.arange(-3, 3, 0.4):
-                _, goal_vector = get_velocity(np.array([y, x]), self.robots[0].goal_pos)
-                pygame.draw.line(self.display, (0,0,255), self.map.pos_to_grid(np.array([y, x])), self.map.pos_to_grid(np.array([y, x]) + goal_vector/5), 2)
-        """
-        # for p in CYLINDER_POSITIONS:
-        #    pygame.draw.circle(self.display, (0,255,0), p/self.map.dim*[200,200], 5)
-        if False:
-            self.render_frame_index += 1
-            pygame.image.save(self.display, f"./img/{self.render_frame_index}.png")
-        pygame.display.update()
+        return self.render(mode="human")
 
 
 if __name__ == "__main__":
-    env = SimpleEnv(
+    env = PassageGymEnv(
         {
-            "world_shape": (4.0, 6.0),
-            "wall_width": 0.5,
+            "world_dim": (4.0, 6.0),
             "dt": 0.05,
-            #'agent_formation': [[-0.5, -0.5], [-0.5, 0.5], [0.5, -0.5], [0.5, 0.5]],
-            #"agent_formation": [[-0.5, -0.5], [-0.5, 0.5], [0.4, 0.0]],
-            "n_agents": 1,
+            "num_envs": 10,
+            "device": "cpu",
+            "n_agents": 5,
+            "agent_formation": (
+                torch.Tensor([[-1, -1], [-1, 1], [0, 0], [1, -1], [1, 1]]) * 0.6
+            ).tolist(),
+            "placement_keepout_border": 1.0,
+            "placement_keepout_wall": 1.5,
+            "pos_noise_std": 0.0,
             "max_time_steps": 500,
             "communication_range": 2.0,
+            "wall_width": 0.3,
             "gap_length": 1.0,
             "grid_px_per_m": 40,
-            "agent_radius": 0.3,
+            "agent_radius": 0.25,
             "render": False,
-            "max_v": 3.0,
-            "max_a": 1.2,
+            "render_px_per_m": 160,
+            "max_v": 10.0,
+            "max_a": 5.0,
         }
     )
     import time
 
-    env.reset()
-    ret = 0
+    torch.manual_seed(0)
+    env.vector_reset()
+    # env.reset()
+    selected_agent = 0
     while True:
-        env.render()
-        a = np.ones((env.cfg["n_agents"], 2)) * 0.2
-        # env.step(a)
-        #time.sleep(1)
-        #env.reset()
-        #continue
 
-        a = np.ones((env.cfg["n_agents"], 2))
+        a = torch.zeros((env.cfg["n_agents"], 2))
+        for event in pygame.event.get():
+            if event.type == pygame.KEYUP:
+                env.reset()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                selected_agent += 1
+                if selected_agent >= env.cfg["n_agents"]:
+                    selected_agent = 0
+            elif event.type == pygame.MOUSEMOTION:
+                v = (
+                    torch.clip(torch.Tensor([-event.rel[0], event.rel[1]]), -20, 20)
+                    / 20
+                )
+                a[selected_agent, 0] = v[0]
+                a[selected_agent, 1] = v[1]
 
-        wall_robot_offset = env.cfg["wall_width"] / 2 + env.cfg["agent_radius"]
-        for i, robot in enumerate(env.robots):
-            if robot.passage_state == "before":
-                goal_vector = np.array([0.0, -wall_robot_offset]) - robot.position
-            elif robot.passage_state == "in":
-                goal_vector = np.array([0.0, wall_robot_offset]) - robot.position
-            elif robot.passage_state == "after":
-                goal_vector = robot.goal_pos - robot.position
-            a[i] = [goal_vector[1], goal_vector[0]]
+        env.render(mode="human")
 
-        # if env.ts > 100:
-        #   a[0][0] = -1.0
-        # print(env.ts, a)
+        env.step(a)
+
+        # env.reset()
+        # time.sleep(1)
+        """
         obs, r, done, info = env.step(a)
-        ret += r
-        print(ret)
-        # print(obs["gso"])
-        env.render()
-        # time.sleep(0.1)
+        for key, agent_reward in info["rewards"].items():
+            returns[key] += agent_reward
+        print(returns)
         if done:
-            #break
             env.reset()
+            returns = torch.zeros((env.cfg["n_agents"]))
+        """
