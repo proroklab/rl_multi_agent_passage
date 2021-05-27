@@ -84,10 +84,11 @@ class PassageEnv(VectorEnv):
             return self.create_state_tensor()
 
     def check_collisions(self, ps):
-        # diff between each agent to each other agent
-        # ps: v x n x 2
-        # calc: v x n x n x 2
-        pass
+        d_agents = torch.cdist(ps, ps)
+        diags = torch.eye(ps.shape[1]).unsqueeze(0).repeat(len(d_agents), 1, 1).bool()
+        d_agents[diags] = float("inf")
+        min_d = torch.min(d_agents, dim=2)[0]
+        return min_d > 2 * self.cfg["agent_radius"]
 
     def rand(self, size, a: float, b: float):
         return (a - b) * torch.rand(size).to(self.device) + b
@@ -174,13 +175,13 @@ class PassageEnv(VectorEnv):
 
         previous_ps = self.ps.clone().to(self.device)
         next_ps = self.ps + possible_vs * self.cfg["dt"]
-        # pos_map_status = self.world_map.set_robot(new_pos, self.index)
-        if True:  # pos_map_status == "ok":
-            dim = torch.Tensor(self.cfg["world_dim"]) / 2
-            self.ps[:, :, X] = torch.clip(next_ps[:, :, X], -dim[X], dim[X] / 2)
-            self.ps[:, :, Y] = torch.clip(next_ps[:, :, Y], -dim[Y], dim[Y] / 2)
-
+        no_coll = self.check_collisions(next_ps)
+        self.ps[no_coll] = next_ps[no_coll]
         self.ps += self.sample_pos_noise()
+        dim = torch.Tensor(self.cfg["world_dim"]) / 2
+        self.ps[:, :, X] = torch.clip(self.ps[:, :, X], -dim[X], dim[X])
+        self.ps[:, :, Y] = torch.clip(self.ps[:, :, Y], -dim[Y], dim[Y])
+
         self.measured_vs = (self.ps - previous_ps) / self.cfg["dt"]
 
         obs = [self.get_obs(index) for index in range(self.cfg["num_envs"])]
@@ -282,7 +283,7 @@ if __name__ == "__main__":
         {
             "world_dim": (4.0, 6.0),
             "dt": 0.05,
-            "num_envs": 10,
+            "num_envs": 3,
             "device": "cpu",
             "n_agents": 5,
             "agent_formation": (
@@ -324,9 +325,9 @@ if __name__ == "__main__":
                     torch.clip(torch.Tensor([-event.rel[0], event.rel[1]]), -20, 20)
                     / 20
                 )
-                a[selected_agent, 0] = v[0]
-                a[selected_agent, 1] = v[1]
+                a[selected_agent] = v
 
+        # env.ps[0, 0, X] = 1.0
         env.render(mode="human")
 
         env.step(a)
