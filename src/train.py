@@ -11,7 +11,7 @@ from ray.rllib.env import BaseEnv
 from ray.rllib.evaluation import MultiAgentEpisode, RolloutWorker
 from ray.rllib.policy import Policy
 
-from envs.env import PassageEnv, PassageGymEnv
+from envs.env import PassageEnvRender  # , PassageGymEnv
 
 from models.model import Model
 from ray.rllib.models import ModelCatalog
@@ -30,7 +30,7 @@ def initialize():
         object_store_memory=8 * (10 ** 9),
     )
 
-    register_env("passage_env", lambda config: PassageGymEnv(config))
+    register_env("passage_env", lambda config: PassageEnvRender(config))
     ModelCatalog.register_custom_model("model", Model)
     ModelCatalog.register_custom_action_dist(
         "hom_multi_action", TorchHomogeneousMultiActionDistribution
@@ -86,6 +86,7 @@ class MyCallbacks(DefaultCallbacks):
 
 
 def train():
+    num_workers = 16
     tune.run(
         MultiPPOTrainer,
         # restore="/home/jb2270/ray_results/PPO/PPO_world_0_2020-04-04_23-01-16c532w9iy/checkpoint_100/checkpoint-100",
@@ -106,8 +107,8 @@ def train():
             "sgd_minibatch_size": 4096,
             "vf_clip_param": 100.0,
             "num_sgd_iter": 18,
-            "num_gpus": 0,
-            "num_workers": 1,
+            "num_gpus": 1,
+            "num_workers": num_workers,
             "num_envs_per_worker": 1,
             "lr": 5e-5,
             "gamma": 0.995,
@@ -118,13 +119,13 @@ def train():
                 "custom_action_dist": "hom_multi_action",
                 "custom_model_config": {
                     "activation": "relu",
-                    "msg_features": 16,
+                    "msg_features": 32,
                     "comm_range": 2.0,
                 },
             },
             "logger_config": {
                 "wandb": {
-                    "project": "marl_object_tracking",
+                    "project": "rl_dynamic_control",
                     "group": "global",
                     "api_key_file": "./src/wandb_api_key_file",
                 }
@@ -132,7 +133,7 @@ def train():
             "env_config": {
                 "world_dim": (4.0, 6.0),
                 "dt": 0.05,
-                "num_envs": 8,
+                "num_envs": 1,
                 "device": "cpu",
                 "n_agents": 5,
                 "agent_formation": (

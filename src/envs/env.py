@@ -35,10 +35,10 @@ STATE_REACHED_GOAL = 3  # goal reached
 STATE_FINISHED = 4  # goal reached and reward bonus given
 
 
-class PassageEnv(VectorEnv):
+class PassageEnv(gym.Env):  # VectorEnv):
     def __init__(self, config):
         self.cfg = config
-        action_space = gym.spaces.Tuple(
+        self.action_space = gym.spaces.Tuple(
             (
                 gym.spaces.Box(
                     low=-float("inf"), high=float("inf"), shape=(2,), dtype=float
@@ -47,7 +47,7 @@ class PassageEnv(VectorEnv):
             * self.cfg["n_agents"]
         )
 
-        observation_space = gym.spaces.Dict(
+        self.observation_space = gym.spaces.Dict(
             {
                 "pos": gym.spaces.Box(
                     -6.0, 6.0, shape=(self.cfg["n_agents"], 2), dtype=float
@@ -61,7 +61,8 @@ class PassageEnv(VectorEnv):
             }
         )
 
-        super().__init__(observation_space, action_space, self.cfg["num_envs"])
+        super().__init__()
+        # super().__init__(observation_space, action_space, self.cfg["num_envs"])
 
         self.device = torch.device(self.cfg["device"])
         self.vec_p_shape = (self.cfg["num_envs"], self.cfg["n_agents"], 2)
@@ -269,7 +270,7 @@ class PassageEnv(VectorEnv):
         self.rew_vecs[st_third] = self.goal_ps[self.states >= 2] - self.ps[st_third]
         rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2)
         # move to next state
-        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.1)] += 1
+        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.2)] += 1
 
         # reward: dense shaped reward following waypoints
         vs_norm = torch.linalg.norm(self.measured_vs, dim=2)
@@ -304,13 +305,18 @@ class PassageEnv(VectorEnv):
         return []
 
 
-class PassageGymEnv(PassageEnv, gym.Env):
+class PassageEnvRender(PassageEnv):
     metadata = {
         "render.modes": ["human", "rgb_array"],
     }
+    reward_range = (-float("inf"), float("inf"))
+    spec = None
 
     def __init__(self, config):
         super().__init__(config)
+
+    def seed(self, seed=None):
+        return
 
     def reset(self):
         return self.reset_at(0)
@@ -320,6 +326,9 @@ class PassageGymEnv(PassageEnv, gym.Env):
         vector_actions[0] = torch.Tensor(actions)
         obs, r, done, info = self.vector_step(vector_actions)
         return obs[0], r[0], done[0], info[0]
+
+    def close(self):
+        pass
 
     def render(self, mode="rgb_array"):
         AGENT_COLOR = BLUE
@@ -382,7 +391,7 @@ class PassageGymEnv(PassageEnv, gym.Env):
         Args:
             index (Optional[int]): An optional sub-env index to render.
         """
-        return self.render(mode="human")
+        return self.render(mode="rgb_array")
 
 
 if __name__ == "__main__":
