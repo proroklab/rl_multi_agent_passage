@@ -99,14 +99,16 @@ class PassageEnv(gym.Env):  # VectorEnv):
         else:
             return self.create_state_tensor()
 
-    def compute_dists(self, ps):
+    def compute_agent_dists(self, ps):
         agents_ds = torch.cdist(ps, ps)
         diags = (
             torch.eye(self.cfg["n_agents"]).unsqueeze(0).repeat(len(ps), 1, 1).bool()
         )
         agents_ds[diags] = float("inf")
+        return agents_ds
 
-        obstacles_ds = torch.stack(
+    def compute_obstacle_dists(self, ps):
+        return torch.stack(
             [
                 # https://stackoverflow.com/questions/5254838/calculating-distance-between-a-point-and-a-rectangular-box-nearest-point
                 torch.linalg.norm(
@@ -133,7 +135,6 @@ class PassageEnv(gym.Env):  # VectorEnv):
             ],
             dim=2,
         )
-        return agents_ds, obstacles_ds
 
     def rand(self, size, a: float, b: float):
         return (a - b) * torch.rand(size).to(self.device) + b
@@ -239,16 +240,26 @@ class PassageEnv(gym.Env):  # VectorEnv):
         possible_vs = self.measured_vs + possible_as * self.cfg["dt"]
 
         previous_ps = self.ps.clone().to(self.device)
-        next_ps = self.ps + possible_vs * self.cfg["dt"]
 
         # check if next position collisides with other agents or wall
-        agents_ds, obstacle_ds = self.compute_dists(next_ps)
-        agents_coll = torch.min(agents_ds, dim=2)[0] <= 2 * self.cfg["agent_radius"]
-        obstacles_coll = torch.min(obstacle_ds, dim=2)[0] <= self.cfg["agent_radius"]
+        # have to update agent step by step to be able to attribute negative rewards to each agent
+        rewards = torch.zeros(self.cfg["num_envs"], self.cfg["n_agents"])
+        next_ps = self.ps.clone()
+        for i in range(self.cfg["n_agents"]):
+            next_ps_agent = next_ps.clone()
+            next_ps_agent[:, i] += possible_vs[:, i] * self.cfg["dt"]
+            agents_ds = self.compute_agent_dists(next_ps_agent)[:, i]
+            agents_coll = torch.min(agents_ds, dim=1)[0] <= 2 * self.cfg["agent_radius"]
+            # only update pos if there are no collisions
+            next_ps[~agents_coll, i] = next_ps_agent[~agents_coll, i]
+            # penalty when colliding
+            rewards[agents_coll, i] -= 1.5
 
-        # only update pos if there are no collisions
-        no_coll = ~agents_coll & ~obstacles_coll
-        self.ps[no_coll] = next_ps[no_coll]
+        obstacle_ds = self.compute_obstacle_dists(next_ps)
+        obstacles_coll = torch.min(obstacle_ds, dim=2)[0] <= self.cfg["agent_radius"]
+        rewards[obstacles_coll] -= 0.25
+        self.ps[~obstacles_coll] = next_ps[~obstacles_coll]
+
         self.ps += self.sample_pos_noise()
         dim = torch.Tensor(self.cfg["world_dim"]) / 2
         self.ps[:, :, X] = torch.clip(self.ps[:, :, X], -dim[X], dim[X])
@@ -275,21 +286,17 @@ class PassageEnv(gym.Env):  # VectorEnv):
         # reward: dense shaped reward following waypoints
         vs_norm = torch.linalg.norm(self.measured_vs, dim=2)
         rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2).unsqueeze(2)
-        rewards = (
+        rewards_dense = (
             torch.bmm(
                 (self.rew_vecs / rew_vecs_norm).view(-1, 2).unsqueeze(1),
                 (self.measured_vs / vs_norm.unsqueeze(2)).view(-1, 2).unsqueeze(2),
             ).view(self.cfg["num_envs"], self.cfg["n_agents"])
             * vs_norm
         )
-        rewards[vs_norm == 0.0] = 0.0
+        rewards[vs_norm > 0.0] += rewards_dense[vs_norm > 0.0]
 
         # bonus when reaching the goal
         rewards[self.states == STATE_REACHED_GOAL] += 10.0
-
-        # penalty when colliding
-        rewards[agents_coll] -= 1.5
-        rewards[obstacles_coll] -= 0.25
 
         obs = [self.get_obs(index) for index in range(self.cfg["num_envs"])]
         all_reached_goal = (self.states == STATE_FINISHED).all(1)
@@ -395,7 +402,7 @@ class PassageEnvRender(PassageEnv):
 
 
 if __name__ == "__main__":
-    env = PassageGymEnv(
+    env = PassageEnvRender(
         {
             "world_dim": (4.0, 6.0),
             "dt": 0.05,
