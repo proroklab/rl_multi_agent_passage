@@ -281,7 +281,7 @@ class PassageEnv(gym.Env):  # VectorEnv):
         self.rew_vecs[st_third] = self.goal_ps[self.states >= 2] - self.ps[st_third]
         rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2)
         # move to next state
-        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.2)] += 1
+        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.1)] += 1
 
         # reward: dense shaped reward following waypoints
         vs_norm = torch.linalg.norm(self.measured_vs, dim=2)
@@ -323,7 +323,9 @@ class PassageEnvRender(PassageEnv):
         super().__init__(config)
 
     def seed(self, seed=None):
-        return
+        rng = torch.manual_seed(seed)
+        initial = rng.initial_seed()
+        return [initial]
 
     def reset(self):
         return self.reset_at(0)
