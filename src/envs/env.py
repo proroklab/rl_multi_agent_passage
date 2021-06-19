@@ -35,10 +35,10 @@ STATE_REACHED_GOAL = 3  # goal reached
 STATE_FINISHED = 4  # goal reached and reward bonus given
 
 
-class PassageEnv(gym.Env):  # VectorEnv):
+class PassageEnv(VectorEnv):
     def __init__(self, config):
         self.cfg = config
-        self.action_space = gym.spaces.Tuple(
+        action_space = gym.spaces.Tuple(
             (
                 gym.spaces.Box(
                     low=-float("inf"), high=float("inf"), shape=(2,), dtype=float
@@ -47,7 +47,7 @@ class PassageEnv(gym.Env):  # VectorEnv):
             * self.cfg["n_agents"]
         )
 
-        self.observation_space = gym.spaces.Dict(
+        observation_space = gym.spaces.Dict(
             {
                 "pos": gym.spaces.Box(
                     -6.0, 6.0, shape=(self.cfg["n_agents"], 2), dtype=float
@@ -61,8 +61,7 @@ class PassageEnv(gym.Env):  # VectorEnv):
             }
         )
 
-        super().__init__()
-        # super().__init__(observation_space, action_space, self.cfg["num_envs"])
+        super().__init__(observation_space, action_space, self.cfg["num_envs"])
 
         self.device = torch.device(self.cfg["device"])
         self.vec_p_shape = (self.cfg["num_envs"], self.cfg["n_agents"], 2)
@@ -268,20 +267,24 @@ class PassageEnv(gym.Env):  # VectorEnv):
         self.measured_vs = (self.ps - previous_ps) / self.cfg["dt"]
 
         # update passage states
-        st_first = self.states == STATE_INITIAL
-        st_second = self.states == STATE_PASSAGE
-        st_third = self.states >= STATE_AFTER
         wall_robot_offset = self.cfg["wall_width"] / 2 + self.cfg["agent_radius"]
-        self.rew_vecs[st_first] = (
-            torch.Tensor([0.0, -wall_robot_offset]) - self.ps[st_first]
+        self.rew_vecs[self.states == STATE_INITIAL] = (
+            torch.Tensor([0.0, -wall_robot_offset])
+            - self.ps[self.states == STATE_INITIAL]
         )
-        self.rew_vecs[st_second] = (
-            torch.Tensor([0.0, wall_robot_offset]) - self.ps[st_second]
+        self.rew_vecs[self.states == STATE_PASSAGE] = (
+            torch.Tensor([0.0, wall_robot_offset])
+            - self.ps[self.states == STATE_PASSAGE]
         )
-        self.rew_vecs[st_third] = self.goal_ps[self.states >= 2] - self.ps[st_third]
+        self.rew_vecs[self.states >= STATE_AFTER] = (
+            self.goal_ps[self.states >= 2] - self.ps[self.states >= STATE_AFTER]
+        )
         rew_vecs_norm = torch.linalg.norm(self.rew_vecs, dim=2)
-        # move to next state
-        self.states[(self.states < STATE_FINISHED) & (rew_vecs_norm < 0.1)] += 1
+
+        # go from STATE_REACHED_GOAL to STATE_FINISHED unconditionally
+        self.states[self.states == STATE_REACHED_GOAL] = STATE_FINISHED
+        # move to next state if distance to waypoint is small enough
+        self.states[(self.states < STATE_REACHED_GOAL) & (rew_vecs_norm < 0.1)] += 1
 
         # reward: dense shaped reward following waypoints
         vs_norm = torch.linalg.norm(self.measured_vs, dim=2)

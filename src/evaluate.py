@@ -1,28 +1,20 @@
 import argparse
 import collections.abc
-import copy
 import json
-import matplotlib.pyplot as plt
-import numpy as np
-import os
 import pandas as pd
-import pickle
 import ray
 import time
-import torch
 import traceback
-import tree
 
+from gym import wrappers
 from pathlib import Path
 from ray.rllib.models import ModelCatalog
 from ray.tune.logger import NoopLogger
 from ray.tune.registry import register_env
 from ray.util.multiprocessing import Pool
 
-from turtlebot import SimEnv, CentrSimEnv
-from simple_env import SimpleEnv
-from model import Model
-from model_2 import Model as Model2
+from models.model import Model
+from envs.env import PassageEnvRender
 from rllib_multi_agent_demo.multi_trainer import MultiPPOTrainer
 from rllib_multi_agent_demo.multi_action_dist import (
     TorchHomogeneousMultiActionDistribution,
@@ -38,150 +30,78 @@ def update_dict(d, u):
     return d
 
 
-def add_batch_dim(data):
-    def mapping(item):
-        if isinstance(item, np.ndarray):
-            return torch.from_numpy(np.expand_dims(item, 0).astype(np.float32))
-        else:
-            return item
-
-    return tree.map_structure(mapping, data)
-
-
-def run_trial(
-    trainer_class=MultiPPOTrainer,
-    checkpoint_path=None,
-    trial=0,
-    cfg_update={},
-    render=False,
-    sampling_probability=0.0,
-):
+def run_trial(checkpoint_path_string, trial, cfg_update={}, render_dir=None):
     try:
+        checkpoint_path = Path(checkpoint_path_string)
         t0 = time.time()
-        cfg = {"env_config": {}, "model": {}}
-        if checkpoint_path is not None:
-            # We might want to run policies that are not loaded from a checkpoint
-            # (e.g. the random policy) and therefore need this to be optional
-            with open(Path(checkpoint_path).parent / "params.json") as json_file:
-                cfg = json.load(json_file)
-
-        if "evaluation_config" in cfg:
-            # overwrite the environment config with evaluation one if it exists
-            cfg = update_dict(cfg, cfg["evaluation_config"])
+        with open(checkpoint_path.parent / "params.json") as json_file:
+            cfg = json.load(json_file)
 
         cfg = update_dict(cfg, cfg_update)
 
-        # cfg['env_config']["render"] = True
-        # cfg['env_config']['agent_formation'] = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]])*0.4
-        # cfg['env_config']['placement_keepout_wall'] = 1.0
-        # cfg['env_config']['placement_keepout_border'] = 0.5
-        # cfg['env_config']['gap_length'] = 1.0
-        # cfg['env_config']['grid_px_per_m'] = 40
-        # cfg['env_config']['dt'] = 0.05
-        # cfg['env_config']['world_shape'] = (4,6)
-
-        trainer = trainer_class(
+        trainer = MultiPPOTrainer(
             env=cfg["env"],
             logger_creator=lambda config: NoopLogger(config, ""),
             config={
                 "framework": "torch",
-                "seed": 0,
+                "seed": trial,
                 "num_workers": 0,
                 "env_config": cfg["env_config"],
                 "model": cfg["model"],
             },
         )
-        if checkpoint_path is not None:
-            checkpoint_file = Path(checkpoint_path) / (
-                "checkpoint-" + os.path.basename(checkpoint_path).split("_")[-1]
-            )
-            trainer.restore(str(checkpoint_file))
+        checkpoint_file = checkpoint_path / (
+            "checkpoint-" + str(int(checkpoint_path.name.split("_")[-1]))
+        )
+        trainer.restore(str(checkpoint_file))
 
-        env = {"pybullet_centr": CentrSimEnv, "pybullet": SimEnv, "simple": SimpleEnv}[
-            cfg["env"]
-        ](cfg["env_config"])
+        env = {"passage_env": PassageEnvRender}[cfg["env"]](cfg["env_config"])
+        if render_dir is not None:
+            env = wrappers.Monitor(env, Path(checkpoint_path) / render_dir, resume=True)
         env.seed(trial)
         obs = env.reset()
 
-        samples = []
         policy = trainer.get_policy()
+        gnn_inputs = []
 
-        """
-        cnn_outputs = []
-        def record_cnn_output(module, input_, output):
-            cnn_outputs.append(output[0].detach().cpu().numpy())
-        gnn_outputs = []
-        def record_gnn_output(module, input_, output):
-            gnn_outputs.append(output[0].detach().cpu().numpy())
-        policy.model.coop_convs[-1].register_forward_hook(record_cnn_output)
-        policy.model.greedy_convs[-1].register_forward_hook(record_cnn_output)
-        policy.model.GFL.register_forward_hook(record_gnn_output)
-        """
+        def record_gnn_input(module, input_, output):
+            gnn_inputs.append(output.detach().cpu().numpy())
+
+        # record layer before GNN input
+        # policy.model.gnn.gnn.nns[3].register_forward_hook(record_gnn_input)
 
         results = []
-        all_rewards = []
-        all_times = []
-        i = 0
-        rewards = 0
-        while True:  # for i in range(cfg['env_config']['max_time_steps']):
-            # if render:
-            # env.render()
-            # time.sleep(1.0)
-
-            # logits, _ = policy.model.forward({"obs": add_batch_dim(obs)}, None, None)
-            # dist = policy.dist_class(logits, policy.model)
-            # actions = [a.tolist()[0] for a in dist.sample()]
-            # print(actions)
-            env.render()
-            time.sleep(0.01)
+        for i in range(cfg["env_config"]["max_time_steps"]):
+            if render_dir is not None:
+                env.render()
             actions = trainer.compute_action(obs)
-            """
-            n_agents = sum(cfg['env_config']['n_agents'])
-            for j in range(n_agents):
-                obs['agents'][j]['msg'] = cnn_outputs[j]
-                obs['agents'][j]['gnn_features'] = gnn_outputs[0][..., j]
-                obs['agents'][j]['logits'] = logits.view(-1, n_agents, 5)[0, j].detach().cpu().numpy()
-            cnn_outputs = []
-            gnn_outputs = []
-            """
-
-            if sampling_probability == 1.0 or np.random.rand() < sampling_probability:
-                samples.append(copy.deepcopy({"obs": obs, "actions": actions}))
-
             obs, r, done, info = env.step(actions)
-            print(rewards)
-            rewards += r
-            # print(info['rewards'].values(), actions)
-            # print(env.robots[0].position)
+            # assert len(gnn_inputs) == 1
+            for j in range(5):
+                results.append(
+                    {
+                        "episode": trial,
+                        "timestep": i,
+                        "agent": j,
+                        "px": env.ps[0, j, 0],
+                        "py": env.ps[0, j, 1],
+                        "vx": actions[j][0],
+                        "vy": actions[j][1],
+                        "reward": info["rewards"][j],
+                        # "n_covered_targets": info["n_covered_targets"][j],
+                        # "gnn_in_features": gnn_inputs[0][j],
+                    }
+                )
+            gnn_inputs = []
+
             if done:
-                all_rewards.append(rewards)
-                all_times.append(env.timestep)
-                print(np.mean(all_rewards), rewards, np.mean(all_times), env.timestep)
-                env.reset()
-                rewards = 0
-            """
-            for j, reward in enumerate(list(info['rewards'].values())):
-                results.append({
-                    'step': i,
-                    'agent': j,
-                    'trial': trial,
-                    'reward': reward
-                })
-            """
-            i += 1
+                break
 
         print("Done", time.time() - t0)
     except Exception as e:
         print(e, traceback.format_exc())
         raise
-    return pd.DataFrame(results), samples
-
-
-def path_to_hash(path):
-    path_split = path.split("/")
-    checkpoint_number_string = path_split[-1].split("_")[-1]
-    path_hash = path_split[-2].split("_")[-2]
-    return path_hash + "-" + checkpoint_number_string
+    return pd.DataFrame(results)
 
 
 def serve_config(
@@ -189,37 +109,23 @@ def serve_config(
     trials,
     seed=0,
     cfg_change={},
-    trainer=MultiPPOTrainer,
-    render=False,
-    sampling_probability=0.0,
+    render_dir=None,
 ):
-    with Pool() as p:
-        results, samples = zip(
-            *p.starmap(
-                run_trial,
-                [
-                    (
-                        trainer,
-                        checkpoint_path,
-                        seed + t,
-                        cfg_change,
-                        render,
-                        sampling_probability,
-                    )
-                    for t in range(trials)
-                ],
-            )
+    with Pool(32) as p:
+        results = p.starmap(
+            run_trial,
+            [
+                (checkpoint_path, seed + t, cfg_change, render_dir)
+                for t in range(trials)
+            ],
         )
-    return pd.concat(results), samples
+    return pd.concat(results)
 
 
 def initialize():
-    ray.init()
-    register_env("pybullet", lambda config: SimEnv(config))
-    register_env("pybullet_centr", lambda config: CentrSimEnv(config))
-    register_env("simple", lambda config: SimpleEnv(config))
+    ray.init(include_dashboard=False, object_store_memory=8 * 10 ** 9)
+    register_env("passage_env", lambda config: PassageEnvRender(config))
     ModelCatalog.register_custom_model("model", Model)
-    ModelCatalog.register_custom_model("model2", Model2)
     ModelCatalog.register_custom_action_dist(
         "hom_multi_action", TorchHomogeneousMultiActionDistribution
     )
@@ -228,70 +134,54 @@ def initialize():
 def serve():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint")
-    parser.add_argument("-s", "--seed", type=int, default=0)
-    parser.add_argument("-l", "--episode_len", type=int, default=None)
-    parser.add_argument("-n", "--num-agents", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--episode_len", type=int, default=None)
+    parser.add_argument("--trials", type=int, default=1)
+    parser.add_argument("--comm_range", type=float, default=None)
+    parser.add_argument(
+        "--render_dir", type=str, default=None
+    )  # subdir in checkpoint for videos
+    parser.add_argument(
+        "--dataset", type=str, default=None
+    )  # filename for dataset in checkpoint dir
     args = parser.parse_args()
 
     initialize()
-    cfg_change = {
+    cfg_update = {
         "env_config": {
-            "render": False,
-        }
+            "render_px_per_m": 160,
+        },
     }
     if args.episode_len is not None:
-        cfg_change["env_config"]["max_episode_len"] = args.episode_len
-    for i in range(1):
-        df, _ = run_trial(
-            trainer_class=MultiPPOTrainer,
-            checkpoint_path=args.checkpoint,
-            trial=args.seed + i,
-            render=True,
-            sampling_probability=1.0,
-            cfg_update=cfg_change,
-        )
-        d = (
-            df.sort_values(["trial", "step"])
-            .groupby(["trial", "step"])["reward"]
-            .apply("sum", "step")
-            .groupby("trial")
-            .cumsum()
-            .groupby("step")
-        )
-        print(d.mean().tail(1))
-    plt.ioff()
-    plt.show()
+        cfg_update["env_config"]["max_episode_len"] = args.episode_len
 
-
-def sample():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint")
-    parser.add_argument("out_file")
-    parser.add_argument("-t", "--trials", type=int, default=100)
-    parser.add_argument("-l", "--episode_len", type=int, default=None)
-    parser.add_argument("-p", "--sample_probability", type=float, default=1.0)
-    parser.add_argument("-n", "--num-agents", type=int, default=5)
-    parser.add_argument("-s", "--seed", type=int, default=0)
-    args = parser.parse_args()
-
-    initialize()
-    cfg_change = {
-        "env_config": {
-            "render": False,
+    if args.comm_range is not None:
+        cfg_update["model"] = {
+            "custom_model_config": {
+                "comm_radius": args.comm_range,
+            },
         }
-    }
-    if args.episode_len is not None:
-        cfg_change["env_config"]["max_episode_len"] = args.episode_len
-    _, samples = serve_config(
-        args.checkpoint,
-        args.trials,
-        seed=args.seed,
-        cfg_change=cfg_change,
-        sampling_probability=args.sample_probability,
+
+    df = serve_config(
+        args.checkpoint, args.trials, args.seed, cfg_update, render_dir=args.render_dir
     )
 
-    with open(args.out_file, "wb") as f:
-        pickle.dump(samples, f)
+    ep_lens = df.groupby("episode")["timestep"].max()
+    ep_rewards = df.groupby("episode")["reward"].agg("sum")
+    print("ep len", ep_lens.mean(), "+-", ep_lens.std())
+    print(
+        "ep rew",
+        ep_rewards.mean(),
+        "+-",
+        ep_rewards.std(),
+        ep_rewards.min(),
+        ep_rewards.max(),
+        ep_rewards.argmax(),
+    )
+
+    if args.dataset is not None:
+        df.to_pickle(Path(args.checkpoint) / args.dataset)
 
 
-serve()
+if __name__ == "__main__":
+    serve()
