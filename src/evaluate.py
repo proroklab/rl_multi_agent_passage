@@ -168,7 +168,7 @@ def serve():
 
     ep_lens = df.groupby("episode")["timestep"].max()
     ep_rewards = df.groupby("episode")["reward"].agg("sum")
-    print("ep len", ep_lens.mean(), "+-", ep_lens.std())
+    print("ep len", ep_lens.mean(), "+-", ep_lens.std(), ep_lens.min(), ep_lens.max())
     print(
         "ep rew",
         ep_rewards.mean(),
