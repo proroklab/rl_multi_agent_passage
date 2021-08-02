@@ -41,7 +41,7 @@ class PassageEnv(VectorEnv):
         action_space = gym.spaces.Tuple(
             (
                 gym.spaces.Box(
-                    low=-float("inf"), high=float("inf"), shape=(2,), dtype=float
+                    low=-self.cfg["max_v"], high=self.cfg["max_v"], shape=(2,), dtype=float
                 ),
             )
             * self.cfg["n_agents"]

@@ -6,15 +6,13 @@ RUN apt update && apt install -y git python3 python3-pip vim cmake ffmpeg
 ARG PIP_NO_CACHE_DIR=1
 
 # Install pytorch for example, and ensure sim works with all our required pkgs
-ARG TORCH=1.8.1
-# Bug: pytorch_geometric 1.8.1 mirror broken
-ARG _TORCH=1.8.0
+ARG TORCH=1.9.0
 ARG CUDA=cu111
 # Pytorch and torch_geometric w/ deps
 RUN pip3 install torch==${TORCH}+${CUDA} \
     -f https://download.pytorch.org/whl/torch_stable.html
 RUN pip3 install torch-scatter torch-sparse torch-cluster torch-spline-conv \
-    -f https://pytorch-geometric.com/whl/torch-${_TORCH}+${CUDA}.html \
+    -f https://pytorch-geometric.com/whl/torch-${TORCH}+${CUDA}.html \
     torch_geometric
 # pytorch_geometric can be a bit buggy during install
 RUN python3 -c "import torch; import torch_geometric"
