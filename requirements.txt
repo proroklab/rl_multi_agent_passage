@@ -1,7 +1,7 @@
 pygame
 wandb
 gym==0.17.3
-torch-scatter -f https://pytorch-geometric.com/whl/torch-1.9.0+cpu.html
-torch-scatter -f https://pytorch-geometric.com/whl/torch-1.9.0+cpu.html
-torch-sparse -f https://pytorch-geometric.com/whl/torch-1.9.0+cpu.html
+torch-scatter
+torch-cluster
+torch-sparse
 torch-geometric
