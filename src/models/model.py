@@ -57,21 +57,9 @@ class GNNBranch(nn.Module):
                     torch.nn.ReLU(),
                     torch.nn.Linear(64, 64),
                 ),
-                "post_gnn": torch.nn.Sequential(
-                    torch.nn.Linear(64, 64),
-                    torch.nn.ReLU(),
-                    torch.nn.Linear(64, 64),
-                    torch.nn.ReLU(),
-                    torch.nn.Linear(64, 64),
-                ),
-                "local": torch.nn.Sequential(
-                    torch.nn.Linear(in_features, 16),
-                    torch.nn.ReLU(),
-                    torch.nn.Linear(16, 32),
-                    torch.nn.ReLU(),
-                    torch.nn.Linear(32, 64),
-                ),
                 "post": torch.nn.Sequential(
+                    torch.nn.Linear(64, 64),
+                    torch.nn.ReLU(),
                     torch.nn.Linear(64, 64),
                     torch.nn.ReLU(),
                     torch.nn.Linear(64, 64),
@@ -81,7 +69,7 @@ class GNNBranch(nn.Module):
             }
         )
 
-    def forward(self, x, p, comm_radius):
+    def forward(self, p: torch.Tensor, x: torch.Tensor, comm_radius: torch.Tensor):
         assert x.ndim == 3  # batch and features
         assert p.ndim == 3  # batch and positions
         batch_size = x.shape[0]
@@ -92,15 +80,12 @@ class GNNBranch(nn.Module):
         b = torch.arange(0, batch_size, dtype=torch.int64, device=x.device)
         batch = torch.repeat_interleave(b, n_agents)
         edge_index = torch_geometric.nn.pool.radius_graph(
-            p.reshape(-1, p.shape[-1]), batch=batch, r=comm_radius, loop=False
+            p.reshape(-1, p.shape[-1]), batch=batch, r=comm_radius[0], loop=True
         )
         gnn_in = encoding_out.reshape(-1, encoding_out.shape[-1])
         gnn_out = self.gnn(gnn_in, edge_index).view(batch_size, n_agents, -1)
 
-        post_gnn = self.nns["post_gnn"](gnn_out)
-        local = self.nns["local"](x)
-
-        return self.nns["post"](post_gnn + local)
+        return self.nns["post"](gnn_out)
 
 
 class Model(TorchModelV2, nn.Module):
@@ -120,7 +105,7 @@ class Model(TorchModelV2, nn.Module):
             "sigmoid": nn.Sigmoid,
         }[cfg["activation"]]
 
-        self.comm_range = cfg["comm_range"]
+        self.comm_range = torch.Tensor([cfg["comm_range"]])
 
         self.gnn = GNNBranch(6, cfg["msg_features"], self.outputs_per_agent, activation)
         self.gnn_value = GNNBranch(6, cfg["msg_features"], 1, activation)
@@ -131,8 +116,8 @@ class Model(TorchModelV2, nn.Module):
         vel = input_dict["obs"]["vel"]
         goal = input_dict["obs"]["goal"]
         x = torch.cat([goal - pos, pos, pos + vel], dim=2)
-        outputs = self.gnn(x, pos, self.comm_range)
-        values = self.gnn_value(x, pos, self.comm_range)
+        outputs = self.gnn(pos, x, self.comm_range)
+        values = self.gnn_value(pos, x, self.comm_range)
         self._cur_value = values.view(-1, self.n_agents)
 
         return outputs.view(-1, self.n_agents * self.outputs_per_agent), state

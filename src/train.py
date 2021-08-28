@@ -5,7 +5,7 @@ from ray import tune
 from ray.tune.registry import register_env
 
 from ray.tune.logger import DEFAULT_LOGGERS
-from ray.tune.integration.wandb import WandbLogger
+from ray.tune.integration.wandb import WandbLoggerCallback
 from ray.rllib.agents.callbacks import DefaultCallbacks
 from ray.rllib.env import BaseEnv
 from ray.rllib.evaluation import MultiAgentEpisode, RolloutWorker
@@ -14,6 +14,7 @@ from ray.rllib.policy import Policy
 from envs.env import PassageEnvRender  # , PassageGymEnv
 
 from models.model import Model
+from models.model_selfloop_multi_layer import Model as ModelSelfloopMultilayer
 from ray.rllib.models import ModelCatalog
 
 from rllib_multi_agent_demo.multi_trainer import MultiPPOTrainer
@@ -32,6 +33,7 @@ def initialize():
 
     register_env("passage_env", lambda config: PassageEnvRender(config))
     ModelCatalog.register_custom_model("model", Model)
+    ModelCatalog.register_custom_model("model_selfloop_multlayer", ModelSelfloopMultilayer)
     ModelCatalog.register_custom_action_dist(
         "hom_multi_action", TorchHomogeneousMultiActionDistribution
     )
@@ -90,13 +92,11 @@ def train():
     tune.run(
         MultiPPOTrainer,
         # restore="/home/jb2270/ray_results/PPO/PPO_world_0_2020-04-04_23-01-16c532w9iy/checkpoint_100/checkpoint-100",
-        checkpoint_freq=1,
-        keep_checkpoints_num=1,
+        checkpoint_freq=10,
+        keep_checkpoints_num=2,
         checkpoint_score_attr="min-episode_len_mean",
-        # checkpoint_score_attr="custom_metrics/covered_targets_mean",
         local_dir="./results",
-        # local_dir="/tmp",
-        loggers=DEFAULT_LOGGERS + (WandbLogger,),
+        #local_dir="/tmp",
         config={
             "seed": 0,
             "framework": "torch",
@@ -115,20 +115,13 @@ def train():
             "batch_mode": "truncate_episodes",
             "observation_filter": "NoFilter",
             "model": {
-                "custom_model": "model",
+                "custom_model": "model_selfloop_multlayer",
                 "custom_action_dist": "hom_multi_action",
                 "custom_model_config": {
                     "activation": "relu",
                     "msg_features": 32,
                     "comm_range": 2.0,
                 },
-            },
-            "logger_config": {
-                "wandb": {
-                    "project": "rl_dynamic_control",
-                    "group": "global",
-                    "api_key_file": "./src/wandb_api_key_file",
-                }
             },
             "env_config": {
                 "world_dim": (4.0, 6.0),
@@ -150,7 +143,7 @@ def train():
                 "agent_radius": 0.25,
                 "render": False,
                 "render_px_per_m": 160,
-                "max_v": 1.0,
+                "max_v": 1.5,
                 "max_a": 1.0,
                 "min_a": -1.0,
             },
@@ -165,6 +158,11 @@ def train():
             },
             # "callbacks": MyCallbacks,
         },
+        callbacks=[WandbLoggerCallback(
+            project="rl_passage",
+            api_key_file="./src/wandb_api_key_file",
+            log_config=True)
+        ]
     )
 
 
