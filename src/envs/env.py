@@ -235,7 +235,7 @@ class PassageEnv(VectorEnv):
         )
 
         desired_as = (desired_vs - self.measured_vs) / self.cfg["dt"]
-        possible_as = torch.clip(desired_as, -self.cfg["max_a"], self.cfg["max_a"])
+        possible_as = torch.clip(desired_as, self.cfg["min_a"], self.cfg["max_a"])
         possible_vs = self.measured_vs + possible_as * self.cfg["dt"]
 
         previous_ps = self.ps.clone().to(self.device)

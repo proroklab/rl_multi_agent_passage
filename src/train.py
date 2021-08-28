@@ -152,6 +152,7 @@ def train():
                 "render_px_per_m": 160,
                 "max_v": 1.0,
                 "max_a": 1.0,
+                "min_a": -1.0,
             },
             "render_env": False,
             "evaluation_interval": 50,
