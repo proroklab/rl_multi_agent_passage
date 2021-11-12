@@ -58,6 +58,12 @@ class PassageEnv(VectorEnv):
                 "goal": gym.spaces.Box(
                     -6.0, 6.0, shape=(self.cfg["n_agents"], 2), dtype=float
                 ),
+                "time": gym.spaces.Box(
+                    0,
+                    self.cfg["max_time_steps"] * self.cfg["dt"],
+                    shape=(self.cfg["n_agents"], 1),
+                    dtype=float,
+                ),
             }
         )
 
@@ -212,6 +218,8 @@ class PassageEnv(VectorEnv):
             "pos": self.ps[index].tolist(),
             "vel": self.measured_vs[index].tolist(),
             "goal": self.goal_ps[index].tolist(),
+            "time": [[(self.timesteps[index] * self.cfg["dt"]).tolist()]]
+            * self.cfg["n_agents"],
         }
 
     def vector_step(
