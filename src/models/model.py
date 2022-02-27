@@ -7,9 +7,12 @@ torch, nn = try_import_torch()
 import torch_geometric
 from torch_geometric.nn.conv import MessagePassing
 from torch import Tensor
+from torch_cluster import radius_graph
 
 
 class ModGNNConv(MessagePassing):
+    propagate_type = {"x": Tensor}
+
     def __init__(self, nn, aggr="mean", **kwargs):
         super(ModGNNConv, self).__init__(aggr=aggr, **kwargs)
         self.nn = nn
@@ -36,7 +39,7 @@ class GNNBranch(nn.Module):
         self.nns = self.generate_nn_instance(
             in_features, msg_features, out_features, activation
         )
-        self.gnn = ModGNNConv(self.nns["gnn"], aggr="add")
+        self.gnn = ModGNNConv(self.nns["gnn"], aggr="add").jittable()
 
     def generate_nn_instance(self, in_features, msg_features, out_features, activation):
         return torch.nn.ModuleDict(
@@ -79,7 +82,7 @@ class GNNBranch(nn.Module):
 
         b = torch.arange(0, batch_size, dtype=torch.int64, device=x.device)
         batch = torch.repeat_interleave(b, n_agents)
-        edge_index = torch_geometric.nn.pool.radius_graph(
+        edge_index = radius_graph(
             p.reshape(-1, p.shape[-1]), batch=batch, r=comm_radius[0], loop=True
         )
         gnn_in = encoding_out.reshape(-1, encoding_out.shape[-1])
