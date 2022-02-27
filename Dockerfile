@@ -6,7 +6,7 @@ RUN apt update && apt install -y git python3 python3-pip vim cmake ffmpeg
 ARG PIP_NO_CACHE_DIR=1
 
 # Install pytorch for example, and ensure sim works with all our required pkgs
-ARG TORCH=1.9.0
+ARG TORCH=1.10.0
 ARG CUDA=cu111
 # Pytorch and torch_geometric w/ deps
 RUN pip3 install torch==${TORCH}+${CUDA} \
@@ -31,4 +31,3 @@ ENV SDL_VIDEODRIVER dummy
 ENV SDL_AUDIODRIVER dsp
 
 WORKDIR /home
-
