@@ -1,7 +1,7 @@
 import argparse
 import json
 import ray
-
+import torch
 from pathlib import Path
 from ray.rllib.models import ModelCatalog
 from ray.tune.logger import NoopLogger
@@ -25,6 +25,8 @@ def initialize():
 
 
 def export():
+    # python3 src/export.py results/MultiPPO_2021-08-27_11-47-28/MultiPPO_passage_env_8e2d2_00000_0_2021-08-27_11-47-28/checkpoint_004899/
+
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint")
     args = parser.parse_args()
@@ -50,7 +52,17 @@ def export():
         "checkpoint-" + str(int(checkpoint_path.name.split("_")[-1]))
     )
     trainer.restore(str(checkpoint_file))
-    trainer.export_model("model", str(checkpoint_path.resolve()))
+
+    jitmodel_path = Path(args.checkpoint) / "model.pt"
+
+    model = trainer.get_policy().model
+    p = torch.zeros(1, model.n_agents, 2)
+    x = torch.zeros(1, model.n_agents, 6)
+    comm_radius = torch.zeros(1)
+    comm_radius[0] = 2.0
+    scripted = torch.jit.script(model.gnn, (p, x, comm_radius))
+    scripted.save(jitmodel_path)
+    # jitmodel = torch.jit.load(jitmodel_path)
 
 
 if __name__ == "__main__":
