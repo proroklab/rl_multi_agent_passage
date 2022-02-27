@@ -39,52 +39,6 @@ def initialize():
     )
 
 
-class MyCallbacks(DefaultCallbacks):
-    def on_episode_start(
-        self,
-        *,
-        worker: RolloutWorker,
-        base_env: BaseEnv,
-        policies: Dict[str, Policy],
-        episode: MultiAgentEpisode,
-        env_index: int,
-        **kwargs
-    ):
-        # Make sure this episode has just been started (only initial obs
-        # logged so far).
-        assert episode.length == 0, (
-            "ERROR: `on_episode_start()` callback should be called right "
-            "after env reset!"
-        )
-
-        episode.user_data["makespan"] = []
-
-    def on_episode_step(
-        self,
-        *,
-        worker: RolloutWorker,
-        base_env: BaseEnv,
-        episode: MultiAgentEpisode,
-        env_index: int,
-        **kwargs
-    ):
-        info = episode.last_info_for()
-        # covered_targets = np.sum(list(info["n_covered_targets"].values()))
-        # episode.user_data["covered_targets"].append(covered_targets)
-
-    def on_episode_end(
-        self,
-        *,
-        worker: RolloutWorker,
-        base_env: BaseEnv,
-        policies: Dict[str, Policy],
-        episode: MultiAgentEpisode,
-        env_index: int,
-        **kwargs
-    ):
-        pass
-        # covered_targets = np.sum(episode.user_data["covered_targets"])
-        # episode.custom_metrics["covered_targets"] = covered_targets
 
 
 def train():
