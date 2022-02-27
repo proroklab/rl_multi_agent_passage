@@ -43,6 +43,7 @@ def train():
         checkpoint_score_attr="min-episode_len_mean",
         local_dir="./results",
         # local_dir="/tmp",
+        stop={"training_iteration": 5000},
         config={
             "seed": 0,
             "framework": "torch",
