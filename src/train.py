@@ -3,20 +3,15 @@ import numpy as np
 import ray
 from ray import tune
 from ray.tune.registry import register_env
-
 from ray.tune.logger import DEFAULT_LOGGERS
 from ray.tune.integration.wandb import WandbLoggerCallback
 from ray.rllib.agents.callbacks import DefaultCallbacks
 from ray.rllib.env import BaseEnv
 from ray.rllib.evaluation import MultiAgentEpisode, RolloutWorker
 from ray.rllib.policy import Policy
-
-from envs.env import PassageEnvRender  # , PassageGymEnv
-
+from envs.env import PassageEnvRender
 from models.model import Model
-from models.model_selfloop_multi_layer import Model as ModelSelfloopMultilayer
 from ray.rllib.models import ModelCatalog
-
 from rllib_multi_agent_demo.multi_trainer import MultiPPOTrainer
 from rllib_multi_agent_demo.multi_action_dist import (
     TorchHomogeneousMultiActionDistribution,
@@ -33,12 +28,9 @@ def initialize():
 
     register_env("passage_env", lambda config: PassageEnvRender(config))
     ModelCatalog.register_custom_model("model", Model)
-    ModelCatalog.register_custom_model("model_selfloop_multlayer", ModelSelfloopMultilayer)
     ModelCatalog.register_custom_action_dist(
         "hom_multi_action", TorchHomogeneousMultiActionDistribution
     )
-
-
 
 
 def train():
@@ -50,7 +42,7 @@ def train():
         keep_checkpoints_num=2,
         checkpoint_score_attr="min-episode_len_mean",
         local_dir="./results",
-        #local_dir="/tmp",
+        # local_dir="/tmp",
         config={
             "seed": 0,
             "framework": "torch",
@@ -69,7 +61,7 @@ def train():
             "batch_mode": "truncate_episodes",
             "observation_filter": "NoFilter",
             "model": {
-                "custom_model": "model_selfloop_multlayer",
+                "custom_model": "model",
                 "custom_action_dist": "hom_multi_action",
                 "custom_model_config": {
                     "activation": "relu",
@@ -112,11 +104,13 @@ def train():
             },
             # "callbacks": MyCallbacks,
         },
-        callbacks=[WandbLoggerCallback(
-            project="rl_passage",
-            api_key_file="./src/wandb_api_key_file",
-            log_config=True)
-        ]
+        # callbacks=[
+        #     WandbLoggerCallback(
+        #         project="rl_passage",
+        #         api_key_file="./src/wandb_api_key_file",
+        #         log_config=True,
+        #     )
+        # ],
     )
 
 
