@@ -112,6 +112,7 @@ class Model(TorchModelV2, nn.Module):
 
         self.gnn = GNNBranch(6, cfg["msg_features"], self.outputs_per_agent, activation)
         self.gnn_value = GNNBranch(6, cfg["msg_features"], 1, activation)
+        self.use_beta = True
 
     @override(ModelV2)
     def forward(self, input_dict, state, seq_lens):
